@@ -18,10 +18,21 @@ function SalesPOS() {
   const [submitting, setSubmitting] = useState(false);
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [activeCategory, setActiveCategory] = useState('All');
+  const [discount, setDiscount] = useState('');
 
   const loadProducts = () => {
     apiFetch(PRODUCTS_API).then((res) => res.json()).then(setProducts);
   };
+
+  const categories = ['All', ...new Set(products.map((p) => p.category).filter(Boolean))];
+
+  const filteredProducts = products.filter((p) => {
+    const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
+    const matchesCategory = activeCategory === 'All' || p.category === activeCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   useEffect(() => {
     loadProducts();
@@ -68,7 +79,9 @@ function SalesPOS() {
     setCart((prev) => prev.filter((item) => item.product_id !== product_id));
   };
 
-  const total = cart.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+  const subtotal = cart.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+  const discountAmount = Number(discount) || 0;
+  const total = Math.max(subtotal - discountAmount, 0);
   const selectedCustomerInfo = customerId
   ? (() => {
       const c = customers.find((c) => c.id === Number(customerId));
@@ -84,6 +97,7 @@ function SalesPOS() {
     setAmountTendered('');
     setPaymentMethod('cash');
     setCustomerId('');
+    setDiscount('');
     setError(null);
   };
 
@@ -158,8 +172,30 @@ function SalesPOS() {
       {/* Product grid */}
       <div className="flex-1">
         <h1 className="text-2xl font-bold text-on-surface mb-4">Sales / POS</h1>
+        <input
+          type="text"
+          placeholder="Search product or scan barcode..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full border border-outline-variant rounded-lg px-4 py-2 mb-3"
+        />
+        <div className="flex gap-2 flex-wrap mb-4">
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setActiveCategory(cat)}
+              className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+                activeCategory === cat
+                  ? 'bg-primary text-on-primary'
+                  : 'bg-surface-container-low text-on-surface-variant'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">
-          {products.map((product) => {
+          {filteredProducts.map((product) => {
             const outOfStock = product.stock_quantity <= 0;
             return (
               <div
@@ -245,9 +281,26 @@ function SalesPOS() {
         </div>
 
         <div className="border-t border-outline-variant mt-3 pt-3">
-          <div className="flex justify-between font-bold text-on-surface text-lg mb-3">
-            <span>Total</span>
-            <span>₱{total.toFixed(2)}</span>
+          <div className="space-y-1 mb-3">
+            <div className="flex justify-between text-sm text-on-surface-variant">
+              <span>Subtotal</span>
+              <span>₱{subtotal.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between items-center text-sm text-error">
+              <span>Discount</span>
+              <input
+                type="number"
+                min="0"
+                value={discount}
+                onChange={(e) => setDiscount(e.target.value)}
+                placeholder="0.00"
+                className="w-24 text-right border border-outline-variant rounded-lg px-2 py-1 text-on-surface"
+              />
+            </div>
+            <div className="flex justify-between font-bold text-on-surface text-lg pt-1 border-t border-outline-variant">
+              <span>Total</span>
+              <span>₱{total.toFixed(2)}</span>
+            </div>
           </div>
 
           <div className="flex gap-2 mb-3">
