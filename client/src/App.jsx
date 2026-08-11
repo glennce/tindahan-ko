@@ -1,38 +1,24 @@
-import { useState, useEffect } from 'react';
-import './App.css';
+import { Routes, Route } from 'react-router-dom';
+import Layout from './components/Layout';
+import Dashboard from './pages/Dashboard';
+import SalesPOS from './pages/SalesPOS';
+import Inventory from './pages/Inventory';
+import Utang from './pages/Utang';
+import Transactions from './pages/Transactions';
+import Reports from './pages/Reports';
 
 function App() {
-  const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    fetch('http://localhost:5000/api/products')
-      .then((res) => res.json())
-      .then((data) => {
-        setProducts(data);
-        setLoading(false);
-      })
-      .catch((err) => {
-        setError(err.message);
-        setLoading(false);
-      });
-  }, []);
-
-  if (loading) return <p>Loading products...</p>;
-  if (error) return <p>Error: {error}</p>;
-
   return (
-    <div>
-      <h1>Tindahan Ko — Products</h1>
-      <ul>
-        {products.map((product) => (
-          <li key={product.id}>
-            {product.name} — ₱{product.selling_price} ({product.stock_quantity} in stock)
-          </li>
-        ))}
-      </ul>
-    </div>
+    <Routes>
+      <Route path="/" element={<Layout />}>
+        <Route index element={<Dashboard />} />
+        <Route path="pos" element={<SalesPOS />} />
+        <Route path="inventory" element={<Inventory />} />
+        <Route path="utang" element={<Utang />} />
+        <Route path="transactions" element={<Transactions />} />
+        <Route path="reports" element={<Reports />} />
+      </Route>
+    </Routes>
   );
 }
 

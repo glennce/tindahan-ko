@@ -1,0 +1,122 @@
+import { useState, useEffect } from 'react';
+
+const emptyForm = {
+  name: '', sku: '', category: '', cost_price: '', selling_price: '',
+  stock_quantity: '', low_stock_threshold: '10', supplier: '',
+};
+
+function ProductModal({ isOpen, onClose, onSave, initialData }) {
+  const [form, setForm] = useState(emptyForm);
+
+  // When editing, pre-fill the form with the product's existing data.
+  // When adding, reset to blank. This runs every time the modal opens.
+  useEffect(() => {
+    setForm(initialData ? { ...initialData } : emptyForm);
+  }, [initialData, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSave(form);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-surface rounded-xl p-6 w-full max-w-md shadow-lg">
+        <h2 className="text-xl font-semibold text-on-surface mb-4">
+          {initialData ? 'Edit Product' : 'Add New Product'}
+        </h2>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="text-sm font-medium text-on-surface-variant">Product Name *</label>
+            <input
+              name="name" value={form.name} onChange={handleChange} required
+              className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">SKU</label>
+              <input
+                name="sku" value={form.sku || ''} onChange={handleChange}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">Category</label>
+              <input
+                name="category" value={form.category || ''} onChange={handleChange}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">Cost Price (₱)</label>
+              <input
+                type="number" step="0.01" name="cost_price" value={form.cost_price}
+                onChange={handleChange}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">Selling Price (₱) *</label>
+              <input
+                type="number" step="0.01" name="selling_price" value={form.selling_price}
+                onChange={handleChange} required
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">Stock Quantity</label>
+              <input
+                type="number" name="stock_quantity" value={form.stock_quantity}
+                onChange={handleChange}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">Low Stock Alert</label>
+              <input
+                type="number" name="low_stock_threshold" value={form.low_stock_threshold}
+                onChange={handleChange}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-on-surface-variant">Supplier</label>
+            <input
+              name="supplier" value={form.supplier || ''} onChange={handleChange}
+              className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button" onClick={onClose}
+              className="px-4 py-2 rounded-lg border border-outline-variant text-on-surface-variant"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-lg bg-primary text-on-primary font-medium"
+            >
+              Save Product
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default ProductModal;
