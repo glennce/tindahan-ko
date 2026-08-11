@@ -49,12 +49,12 @@ function Reports() {
 
   return (
     <div>
-      <div className="flex justify-between items-start mb-6">
+      <div className="flex flex-col lg:flex-row lg:justify-between lg:items-start gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-on-surface">Business Performance</h1>
           <p className="text-on-surface-variant">{start} to {end}</p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex flex-wrap gap-2 items-center">
           <input type="date" value={start} onChange={(e) => setStart(e.target.value)}
             className="border border-outline-variant rounded-lg px-2 py-1 text-sm" />
           <span className="text-on-surface-variant">to</span>
@@ -65,7 +65,7 @@ function Reports() {
 
       {report && (
         <>
-          <div className="grid grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
             <div className="bg-surface border border-outline-variant rounded-xl p-4">
               <p className="text-on-surface-variant text-sm">Total Sales</p>
               <p className="text-2xl font-bold text-on-surface">₱{report.total_sales.toFixed(2)}</p>
@@ -80,7 +80,7 @@ function Reports() {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
             {/* Sales trend bar chart, hand-built with divs */}
             <div className="col-span-2 bg-surface border border-outline-variant rounded-xl p-4">
               <h2 className="font-semibold text-on-surface mb-4">Sales Trend</h2>
@@ -117,7 +117,7 @@ function Reports() {
 
       <div className="bg-surface border border-outline-variant rounded-xl p-4">
         <h2 className="font-semibold text-on-surface mb-3">Expense Log</h2>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <form onSubmit={addExpense} className="space-y-2">
             <select
               value={expenseForm.category}

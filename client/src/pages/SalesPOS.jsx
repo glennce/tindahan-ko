@@ -5,6 +5,7 @@ const PRODUCTS_API = '/products';
 const CUSTOMERS_API = '/customers';
 const SALES_API = '/sales';
 
+
 function SalesPOS() {
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -14,6 +15,7 @@ function SalesPOS() {
   const [amountTendered, setAmountTendered] = useState('');
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [mobileCartOpen, setMobileCartOpen] = useState(false);
 
   const loadProducts = () => {
     apiFetch(PRODUCTS_API).then((res) => res.json()).then(setProducts);
@@ -121,11 +123,11 @@ function SalesPOS() {
   };
 
   return (
-    <div className="flex gap-6 h-full">
+    <div className="lg:flex lg:gap-6 h-full">
       {/* Product grid */}
       <div className="flex-1">
         <h1 className="text-2xl font-bold text-on-surface mb-4">Sales / POS</h1>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">
           {products.map((product) => {
             const outOfStock = product.stock_quantity <= 0;
             return (
@@ -133,7 +135,7 @@ function SalesPOS() {
                 key={product.id}
                 className="bg-surface border border-outline-variant rounded-xl p-3"
               >
-                <p className="font-medium text-on-surface">{product.name}</p>
+                <p className="font-medium text-on-surface text-sm lg:text-base">{product.name}</p>
                 <p className="text-primary font-semibold">₱{product.selling_price}</p>
                 <p className="text-on-surface-variant text-sm mb-2">
                   {product.stock_quantity} in stock
@@ -155,9 +157,22 @@ function SalesPOS() {
         </div>
       </div>
 
-      {/* Cart / checkout panel */}
-      <div className="w-80 bg-surface border border-outline-variant rounded-xl p-4 flex flex-col">
-        <h2 className="font-semibold text-on-surface mb-3">Current Sale</h2>
+      {/* Cart panel: always visible on desktop (lg+), an overlay on mobile */}
+      <div
+        className={`
+          bg-surface border border-outline-variant p-4 flex flex-col
+          lg:static lg:w-80 lg:rounded-xl lg:flex
+          fixed inset-x-0 bottom-0 top-16 z-50 rounded-t-2xl
+          ${mobileCartOpen ? 'flex' : 'hidden'}
+        `}
+      >
+        <div className="flex justify-between items-center mb-3 lg:hidden">
+          <h2 className="font-semibold text-on-surface">Current Sale</h2>
+          <button onClick={() => setMobileCartOpen(false)} className="text-on-surface-variant text-xl">
+            ✕
+          </button>
+        </div>
+        <h2 className="hidden lg:block font-semibold text-on-surface mb-3">Current Sale</h2>
 
         <div className="flex-1 overflow-y-auto space-y-3">
           {cart.length === 0 && (
@@ -253,7 +268,10 @@ function SalesPOS() {
           {error && <p className="text-error text-sm mb-2">{error}</p>}
 
           <button
-            onClick={handleCompleteSale}
+            onClick={async () => {
+              await handleCompleteSale();
+              setMobileCartOpen(false);
+            }}
             disabled={submitting}
             className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg"
           >
@@ -261,6 +279,17 @@ function SalesPOS() {
           </button>
         </div>
       </div>
+
+      {/* Mobile-only "View Cart" bar, sits above the bottom tab nav */}
+      {cart.length > 0 && !mobileCartOpen && (
+        <button
+          onClick={() => setMobileCartOpen(true)}
+          className="lg:hidden fixed bottom-16 inset-x-4 bg-primary text-on-primary font-semibold py-3 rounded-xl flex justify-between px-4 z-40"
+        >
+          <span>{cart.reduce((n, i) => n + i.quantity, 0)} items — View Cart</span>
+          <span>₱{total.toFixed(2)}</span>
+        </button>
+      )}
     </div>
   );
 }

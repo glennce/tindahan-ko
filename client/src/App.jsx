@@ -8,6 +8,7 @@ import Inventory from './pages/Inventory';
 import Utang from './pages/Utang';
 import Transactions from './pages/Transactions';
 import Reports from './pages/Reports';
+import More from './pages/More';
 
 function App() {
   return (
@@ -27,6 +28,7 @@ function App() {
         <Route path="utang" element={<Utang />} />
         <Route path="transactions" element={<Transactions />} />
         <Route path="reports" element={<Reports />} />
+        <Route path="more" element={<More />} />
       </Route>
     </Routes>
   );

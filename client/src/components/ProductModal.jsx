@@ -28,7 +28,7 @@ function ProductModal({ isOpen, onClose, onSave, initialData }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-surface rounded-xl p-6 w-full max-w-md shadow-lg">
+      <div className="bg-surface rounded-xl p-6 w-full max-w-md shadow-lg max-h-[90vh] overflow-y-auto">
         <h2 className="text-xl font-semibold text-on-surface mb-4">
           {initialData ? 'Edit Product' : 'Add New Product'}
         </h2>

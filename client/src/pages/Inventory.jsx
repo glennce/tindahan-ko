@@ -73,9 +73,9 @@ function Inventory() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col lg:flex-row justify-between lg:items-center gap-3 mb-6">
         <div>
-          <h1 className="text-3xl font-bold text-on-surface">Inventory</h1>
+          <h1 className="text-2xl lg:text-3xl font-bold text-on-surface">Inventory</h1>
           <p className="text-on-surface-variant">Manage your product catalog and stock levels.</p>
         </div>
         <button
@@ -86,7 +86,41 @@ function Inventory() {
         </button>
       </div>
 
-      <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
+      {/* Mobile: stacked cards, hidden at lg and above */}
+      <div className="lg:hidden space-y-3">
+        {products.map((product) => {
+          const isLow = product.stock_quantity <= product.low_stock_threshold;
+          return (
+            <div key={product.id} className="bg-surface border border-outline-variant rounded-xl p-4">
+              <div className="flex justify-between items-start">
+                <div>
+                  <p className="font-medium text-on-surface">{product.name}</p>
+                  <p className="text-on-surface-variant text-sm">{product.category || '—'}</p>
+                </div>
+                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                  isLow ? 'bg-error-container text-error' : 'bg-secondary-container text-secondary'
+                }`}>
+                  {product.stock_quantity} pcs
+                </span>
+              </div>
+              <div className="flex justify-between items-center mt-3">
+                <span className="text-primary font-semibold">₱{product.selling_price}</span>
+                <div className="space-x-3">
+                  <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium">
+                    Edit
+                  </button>
+                  <button onClick={() => handleDelete(product.id)} className="text-error text-sm font-medium">
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Desktop: table, hidden below lg */}
+      <div className="hidden lg:block bg-surface border border-outline-variant rounded-xl overflow-hidden">
         <table className="w-full text-left">
           <thead className="bg-surface-container-low text-on-surface-variant text-sm">
             <tr>

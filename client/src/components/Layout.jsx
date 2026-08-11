@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { LayoutGrid, ShoppingCart, Package, CreditCard, Menu } from 'lucide-react';
 
 const navItems = [
   { to: '/', label: 'Dashboard', end: true },
@@ -8,6 +9,14 @@ const navItems = [
   { to: '/utang', label: 'Utang' },
   { to: '/transactions', label: 'Transactions' },
   { to: '/reports', label: 'Reports' },
+];
+
+const mobileNavItems = [
+  { to: '/', label: 'Home', icon: LayoutGrid, end: true },
+  { to: '/pos', label: 'POS', icon: ShoppingCart },
+  { to: '/inventory', label: 'Inventory', icon: Package },
+  { to: '/utang', label: 'Utang', icon: CreditCard },
+  { to: '/more', label: 'More', icon: Menu },
 ];
 
 function Layout() {
@@ -21,7 +30,8 @@ function Layout() {
 
   return (
     <div className="flex min-h-screen bg-background">
-      <aside className="w-60 bg-surface border-r border-outline-variant flex flex-col p-4">
+      {/* Desktop sidebar — completely hidden below the lg breakpoint */}
+      <aside className="hidden lg:flex w-60 bg-surface border-r border-outline-variant flex-col p-4">
         <div className="mb-8">
           <h1 className="text-primary text-xl font-bold">Tindahan Ko</h1>
           <p className="text-on-surface-variant text-sm">Admin Terminal</p>
@@ -54,9 +64,37 @@ function Layout() {
           </button>
         </div>
       </aside>
-      <main className="flex-1 p-8">
-        <Outlet />
-      </main>
+
+      <div className="flex-1 flex flex-col">
+        {/* Mobile top bar — shown only below lg */}
+        <header className="lg:hidden flex items-center bg-surface border-b border-outline-variant px-4 py-3">
+          <h1 className="text-primary text-lg font-bold">Tindahan Ko</h1>
+        </header>
+
+        {/* pb-20 on mobile reserves space so content doesn't hide behind the fixed bottom nav */}
+        <main className="flex-1 p-4 lg:p-8 pb-24 lg:pb-8">
+          <Outlet />
+        </main>
+      </div>
+
+      {/* Mobile bottom tab bar — shown only below lg */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-surface border-t border-outline-variant flex justify-around py-2 z-40">
+        {mobileNavItems.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end}
+            className={({ isActive }) =>
+              `flex flex-col items-center gap-0.5 px-2 py-1 text-xs font-medium ${
+                isActive ? 'text-primary' : 'text-on-surface-variant'
+              }`
+            }
+          >
+            <item.icon size={20} />
+            {item.label}
+          </NavLink>
+        ))}
+      </nav>
     </div>
   );
 }
