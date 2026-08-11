@@ -1,6 +1,7 @@
 import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 import ProductModal from '../components/ProductModal';
+import StockInModal from '../components/StockInModal';
 
 const API = '/products';
 
@@ -12,6 +13,7 @@ function Inventory() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
+  const [stockInOpen, setStockInOpen] = useState(false);
 
   const fetchProducts = () => {
     setLoading(true);
@@ -70,6 +72,21 @@ function Inventory() {
     }
   };
 
+  const handleStockIn = async (productId, data) => {
+    try {
+      const res = await apiFetch(`${API}/${productId}/restock`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Restock failed');
+      setStockInOpen(false);
+      fetchProducts();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!confirm('Delete this product? This cannot be undone.')) return;
     try {
@@ -121,12 +138,20 @@ function Inventory() {
             ))}
           </div>
         </div>
-        <button
-          onClick={openAddModal}
-          className="bg-primary text-on-primary font-medium px-4 py-2 rounded-lg"
-        >
-          + Add Product
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setStockInOpen(true)}
+            className="border border-primary text-primary font-medium px-4 py-2 rounded-lg"
+          >
+            Stock In
+          </button>
+          <button
+            onClick={openAddModal}
+            className="bg-primary text-on-primary font-medium px-4 py-2 rounded-lg"
+          >
+            + Add Product
+          </button>
+        </div>
       </div>
 
       {/* Mobile: stacked cards, hidden at lg and above */}
@@ -205,6 +230,13 @@ function Inventory() {
         onClose={() => setModalOpen(false)}
         onSave={handleSave}
         initialData={editingProduct}
+      />
+
+      <StockInModal
+        isOpen={stockInOpen}
+        onClose={() => setStockInOpen(false)}
+        onSave={handleStockIn}
+        products={products}
       />
     </div>
   );

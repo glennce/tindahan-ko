@@ -536,6 +536,33 @@ app.get('/api/reports', async (req, res) => {
   }
 });
 
+app.post('/api/products/:id/restock', requireAuth, async (req, res) => {
+  const { quantity, cost_price } = req.body;
+  const qty = Number(quantity);
+
+  if (!qty || qty <= 0) {
+    return res.status(400).json({ error: 'Quantity must be a positive number' });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE products
+       SET stock_quantity = stock_quantity + $1,
+           cost_price = COALESCE($2, cost_price)
+       WHERE id = $3
+       RETURNING *`,
+      [qty, cost_price || null, req.params.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to restock product' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
