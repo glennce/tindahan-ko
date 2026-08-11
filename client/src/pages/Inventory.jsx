@@ -10,6 +10,8 @@ function Inventory() {
   const [error, setError] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+  const [search, setSearch] = useState('');
+  const [activeCategory, setActiveCategory] = useState('All');
 
   const fetchProducts = () => {
     setLoading(true);
@@ -24,6 +26,17 @@ function Inventory() {
         setLoading(false);
       });
   };
+
+  const categories = ['All', ...new Set(products.map((p) => p.category).filter(Boolean))];
+
+  const filteredProducts = products.filter((p) => {
+    const matchesSearch =
+      p.name.toLowerCase().includes(search.toLowerCase()) ||
+      (p.sku || '').toLowerCase().includes(search.toLowerCase()) ||
+      (p.category || '').toLowerCase().includes(search.toLowerCase());
+    const matchesCategory = activeCategory === 'All' || p.category === activeCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   useEffect(() => {
     fetchProducts();
@@ -45,7 +58,7 @@ function Inventory() {
     const method = isEditing ? 'PUT' : 'POST';
 
     try {
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
         body: JSON.stringify(formData),
       });
@@ -71,12 +84,42 @@ function Inventory() {
   if (loading) return <p className="text-on-surface-variant">Loading products...</p>;
   if (error) return <p className="text-error">Error: {error}</p>;
 
+  function getStatus(product) {
+    if (product.stock_quantity <= 0) return { label: 'Out of Stock', className: 'bg-error-container text-error' };
+    if (product.stock_quantity <= product.low_stock_threshold) return { label: 'Low Stock', className: 'bg-orange-100 text-orange-700' };
+    return { label: 'Available', className: 'bg-secondary-container text-secondary' };
+  }
+
   return (
     <div>
       <div className="flex flex-col lg:flex-row justify-between lg:items-center gap-3 mb-6">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-on-surface">Inventory</h1>
           <p className="text-on-surface-variant">Manage your product catalog and stock levels.</p>
+        </div>
+        <div className="mb-4">
+          <input
+            type="text"
+            placeholder="Search products, SKU, or categories..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full border border-outline-variant rounded-lg px-4 py-2 mb-3"
+          />
+          <div className="flex gap-2 flex-wrap">
+            {categories.map((cat) => (
+              <button
+                key={cat}
+                onClick={() => setActiveCategory(cat)}
+                className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+                  activeCategory === cat
+                    ? 'bg-primary text-on-primary'
+                    : 'bg-surface-container-low text-on-surface-variant'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
         </div>
         <button
           onClick={openAddModal}
@@ -88,8 +131,8 @@ function Inventory() {
 
       {/* Mobile: stacked cards, hidden at lg and above */}
       <div className="lg:hidden space-y-3">
-        {products.map((product) => {
-          const isLow = product.stock_quantity <= product.low_stock_threshold;
+        {filteredProducts.map((product) => {
+          const status = getStatus(product);
           return (
             <div key={product.id} className="bg-surface border border-outline-variant rounded-xl p-4">
               <div className="flex justify-between items-start">
@@ -97,10 +140,8 @@ function Inventory() {
                   <p className="font-medium text-on-surface">{product.name}</p>
                   <p className="text-on-surface-variant text-sm">{product.category || '—'}</p>
                 </div>
-                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                  isLow ? 'bg-error-container text-error' : 'bg-secondary-container text-secondary'
-                }`}>
-                  {product.stock_quantity} pcs
+                <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.className}`}>
+                  {status.label}
                 </span>
               </div>
               <div className="flex justify-between items-center mt-3">
@@ -132,18 +173,16 @@ function Inventory() {
             </tr>
           </thead>
           <tbody>
-            {products.map((product) => {
-              const isLow = product.stock_quantity <= product.low_stock_threshold;
+            {filteredProducts.map((product) => {
+              const status = getStatus(product);
               return (
                 <tr key={product.id} className="border-t border-outline-variant">
                   <td className="px-4 py-3 font-medium text-on-surface">{product.name}</td>
                   <td className="px-4 py-3 text-on-surface-variant">{product.category || '—'}</td>
                   <td className="px-4 py-3 text-on-surface-variant">₱{product.selling_price}</td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      isLow ? 'bg-error-container text-error' : 'bg-secondary-container text-secondary'
-                    }`}>
-                      {product.stock_quantity} pcs
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.className}`}>
+                      {status.label}
                     </span>
                   </td>
                   <td className="px-4 py-3 space-x-3">
