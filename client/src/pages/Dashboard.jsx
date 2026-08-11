@@ -1,13 +1,14 @@
+import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 
-const API = 'http://localhost:5000/api/dashboard';
+const API = '/dashboard';
 
 function Dashboard() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetch(API)
+    apiFetch(API)
       .then((res) => res.json())
       .then(setData)
       .catch((err) => setError(err.message));

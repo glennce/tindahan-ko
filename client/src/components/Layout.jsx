@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 const navItems = [
   { to: '/', label: 'Dashboard', end: true },
@@ -10,6 +11,14 @@ const navItems = [
 ];
 
 function Layout() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
   return (
     <div className="flex min-h-screen bg-background">
       <aside className="w-60 bg-surface border-r border-outline-variant flex flex-col p-4">
@@ -17,7 +26,7 @@ function Layout() {
           <h1 className="text-primary text-xl font-bold">Tindahan Ko</h1>
           <p className="text-on-surface-variant text-sm">Admin Terminal</p>
         </div>
-        <nav className="flex flex-col gap-1">
+        <nav className="flex flex-col gap-1 flex-1">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
@@ -35,6 +44,15 @@ function Layout() {
             </NavLink>
           ))}
         </nav>
+        <div className="border-t border-outline-variant pt-3">
+          <p className="text-on-surface text-sm font-medium px-3">{user?.name}</p>
+          <button
+            onClick={handleLogout}
+            className="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-error hover:bg-error-container"
+          >
+            Logout
+          </button>
+        </div>
       </aside>
       <main className="flex-1 p-8">
         <Outlet />

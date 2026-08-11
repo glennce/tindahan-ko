@@ -1,7 +1,8 @@
+import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 import ProductModal from '../components/ProductModal';
 
-const API = 'http://localhost:5000/api/products';
+const API = '/products';
 
 function Inventory() {
   const [products, setProducts] = useState([]);
@@ -12,7 +13,7 @@ function Inventory() {
 
   const fetchProducts = () => {
     setLoading(true);
-    fetch(API)
+    apiFetch(API)
       .then((res) => res.json())
       .then((data) => {
         setProducts(data);
@@ -46,7 +47,6 @@ function Inventory() {
     try {
       const res = await fetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
       });
       if (!res.ok) throw new Error('Save failed');
@@ -60,7 +60,7 @@ function Inventory() {
   const handleDelete = async (id) => {
     if (!confirm('Delete this product? This cannot be undone.')) return;
     try {
-      const res = await fetch(`${API}/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API}/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       fetchProducts();
     } catch (err) {

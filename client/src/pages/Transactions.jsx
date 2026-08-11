@@ -1,17 +1,18 @@
+import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 
-const API = 'http://localhost:5000/api/transactions';
+const API = '/transactions';
 
 function Transactions() {
   const [transactions, setTransactions] = useState([]);
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
-    fetch(API).then((res) => res.json()).then(setTransactions);
+    apiFetch(API).then((res) => res.json()).then(setTransactions);
   }, []);
 
   const viewDetail = (id) => {
-    fetch(`${API}/${id}`).then((res) => res.json()).then(setSelected);
+    apiFetch(`${API}/${id}`).then((res) => res.json()).then(setSelected);
   };
 
   const badgeColor = {

@@ -1,7 +1,8 @@
+import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 
-const REPORTS_API = 'http://localhost:5000/api/reports';
-const EXPENSES_API = 'http://localhost:5000/api/expenses';
+const REPORTS_API = '/reports';
+const EXPENSES_API = '/expenses';
 
 function firstOfMonth() {
   const d = new Date();
@@ -19,12 +20,12 @@ function Reports() {
   const [expenseForm, setExpenseForm] = useState({ category: 'Store Supplies', amount: '', description: '' });
 
   const loadReport = () => {
-    fetch(`${REPORTS_API}?start=${start}&end=${end}`)
+    apiFetch(`${REPORTS_API}?start=${start}&end=${end}`)
       .then((res) => res.json())
       .then(setReport);
   };
   const loadExpenses = () => {
-    fetch(EXPENSES_API).then((res) => res.json()).then(setExpenses);
+    apiFetch(EXPENSES_API).then((res) => res.json()).then(setExpenses);
   };
 
   useEffect(() => {
@@ -35,9 +36,8 @@ function Reports() {
   const addExpense = async (e) => {
     e.preventDefault();
     if (!expenseForm.amount) return;
-    await fetch(EXPENSES_API, {
+    await apiFetch(EXPENSES_API, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(expenseForm),
     });
     setExpenseForm({ category: 'Store Supplies', amount: '', description: '' });

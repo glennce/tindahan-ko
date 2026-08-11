@@ -1,6 +1,7 @@
+import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 
-const UTANG_API = 'http://localhost:5000/api/utang';
+const UTANG_API = '/utang';
 
 function Utang() {
   const [ledger, setLedger] = useState([]);
@@ -10,7 +11,7 @@ function Utang() {
   const [error, setError] = useState(null);
 
   const loadLedger = () => {
-    fetch(UTANG_API).then((res) => res.json()).then(setLedger);
+    apiFetch(UTANG_API).then((res) => res.json()).then(setLedger);
   };
 
   useEffect(() => {
@@ -21,7 +22,7 @@ function Utang() {
     setSelectedCustomer(customer);
     setPaymentAmount('');
     setError(null);
-    fetch(`${UTANG_API}/${customer.customer_id}`)
+    apiFetch(`${UTANG_API}/${customer.customer_id}`)
       .then((res) => res.json())
       .then(setHistory);
   };
@@ -32,9 +33,8 @@ function Utang() {
       return;
     }
     try {
-      const res = await fetch(`${UTANG_API}/payment`, {
+      const res = await apiFetch(`${UTANG_API}/payment`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customer_id: selectedCustomer.customer_id,
           amount: Number(paymentAmount),

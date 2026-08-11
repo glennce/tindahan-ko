@@ -1,8 +1,9 @@
+import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 
-const PRODUCTS_API = 'http://localhost:5000/api/products';
-const CUSTOMERS_API = 'http://localhost:5000/api/customers';
-const SALES_API = 'http://localhost:5000/api/sales';
+const PRODUCTS_API = '/products';
+const CUSTOMERS_API = '/customers';
+const SALES_API = '/sales';
 
 function SalesPOS() {
   const [products, setProducts] = useState([]);
@@ -15,12 +16,12 @@ function SalesPOS() {
   const [submitting, setSubmitting] = useState(false);
 
   const loadProducts = () => {
-    fetch(PRODUCTS_API).then((res) => res.json()).then(setProducts);
+    apiFetch(PRODUCTS_API).then((res) => res.json()).then(setProducts);
   };
 
   useEffect(() => {
     loadProducts();
-    fetch(CUSTOMERS_API).then((res) => res.json()).then(setCustomers);
+    apiFetch(CUSTOMERS_API).then((res) => res.json()).then(setCustomers);
   }, []);
 
   const addToCart = (product) => {
@@ -93,9 +94,8 @@ function SalesPOS() {
 
     setSubmitting(true);
     try {
-      const res = await fetch(SALES_API, {
+      const res = await apiFetch(SALES_API, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customer_id: paymentMethod === 'utang' ? Number(customerId) : null,
           items: cart.map(({ product_id, quantity, unit_price }) => ({
