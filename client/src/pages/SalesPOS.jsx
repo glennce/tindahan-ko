@@ -134,6 +134,7 @@ function SalesPOS() {
           })),
           payment_method: paymentMethod,
           amount_tendered: paymentMethod === 'cash' ? Number(amountTendered) : null,
+          discount_amount: discountAmount,
         }),
       });
       const data = await res.json();

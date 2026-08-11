@@ -198,7 +198,7 @@ app.delete('/api/customers/:id', requireAuth, async (req, res) => {
 });
 
 app.post('/api/sales', requireAuth, async (req, res) => {
-  const { customer_id, items, payment_method, amount_tendered } = req.body;
+  const { customer_id, items, payment_method, amount_tendered, discount_amount } = req.body;
 
   if (!items || items.length === 0) {
     return res.status(400).json({ error: 'Sale must include at least one item' });
@@ -211,13 +211,15 @@ app.post('/api/sales', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const total_amount = items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+    const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+    const discount = Number(discount_amount) || 0;
+    const total_amount = Math.max(subtotal - discount, 0);
     const change_amount = payment_method === 'cash' ? (amount_tendered - total_amount) : null;
 
     const saleResult = await client.query(
-      `INSERT INTO sales (customer_id, total_amount, payment_method, amount_tendered, change_amount)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [customer_id || null, total_amount, payment_method, amount_tendered || null, change_amount]
+      `INSERT INTO sales (customer_id, subtotal, discount_amount, total_amount, payment_method, amount_tendered, change_amount)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [customer_id || null, subtotal, discount, total_amount, payment_method, amount_tendered || null, change_amount]
     );
     const sale = saleResult.rows[0];
 
@@ -279,6 +281,50 @@ app.post('/api/sales', requireAuth, async (req, res) => {
     await client.query('ROLLBACK');
     console.error(err);
     res.status(400).json({ error: err.message || 'Failed to process sale' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/sales/:id/void', requireAuth, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const saleRes = await client.query('SELECT * FROM sales WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (saleRes.rows.length === 0) throw new Error('Sale not found');
+    const sale = saleRes.rows[0];
+    if (sale.status === 'voided') throw new Error('This sale is already voided');
+
+    const items = await client.query('SELECT * FROM sale_items WHERE sale_id = $1', [sale.id]);
+    for (const item of items.rows) {
+      await client.query(
+        'UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2',
+        [item.quantity, item.product_id]
+      );
+    }
+
+    if (sale.payment_method === 'utang' && sale.customer_id) {
+      const lastUtang = await client.query(
+        `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+        [sale.customer_id]
+      );
+      const previousBalance = lastUtang.rows.length ? Number(lastUtang.rows[0].balance_after) : 0;
+      const newBalance = previousBalance - Number(sale.total_amount);
+
+      await client.query(
+        `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
+         VALUES ($1, $2, 'payment', $3, $4, 'Sale voided')`,
+        [sale.customer_id, sale.id, sale.total_amount, newBalance]
+      );
+    }
+
+    await client.query(`UPDATE sales SET status = 'voided' WHERE id = $1`, [sale.id]);
+    await client.query('COMMIT');
+    res.json({ message: 'Sale voided successfully' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message });
   } finally {
     client.release();
   }
@@ -395,6 +441,14 @@ app.post('/api/utang/payment', async (req, res) => {
       [customer_id]
     );
     const currentBalance = lastEntry.rows.length ? Number(lastEntry.rows[0].balance_after) : 0;
+
+    // New check — reject payments larger than what's actually owed
+    if (Number(amount) > currentBalance) {
+      return res.status(400).json({
+        error: `Payment exceeds current balance. Customer owes ₱${currentBalance.toFixed(2)}.`,
+      });
+    }
+
     const newBalance = currentBalance - Number(amount);
 
     const result = await pool.query(
@@ -409,40 +463,95 @@ app.post('/api/utang/payment', async (req, res) => {
   }
 });
 
-app.get('/api/transactions', async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT s.id, s.total_amount, s.payment_method, s.created_at,
-             c.name AS customer_name,
-             COUNT(si.id) AS item_count
+app.get('/api/transactions', requireAuth, async (req, res) => {
+  const { start = '2000-01-01', end = '2100-12-31', type = 'All', status = 'All', page = 1, limit = 10 } = req.query;
+  const offset = (Number(page) - 1) * Number(limit);
+  const params = [start, end, type, status];
+
+  const cte = `
+    WITH combined AS (
+      SELECT 'sale' AS source, s.id, s.created_at,
+             COALESCE(c.name, '- Walk-in -') AS customer_name,
+             s.total_amount AS amount,
+             CASE WHEN s.payment_method = 'utang' THEN 'Sale (Utang)'
+                  WHEN s.payment_method = 'gcash' THEN 'Sale (GCash)'
+                  ELSE 'Sale (Cash)' END AS type_label,
+             s.status
       FROM sales s
       LEFT JOIN customers c ON c.id = s.customer_id
-      LEFT JOIN sale_items si ON si.sale_id = s.id
-      GROUP BY s.id, c.name
-      ORDER BY s.created_at DESC
-    `);
-    res.json(result.rows);
+
+      UNION ALL
+
+      SELECT 'utang_payment' AS source, ut.id, ut.created_at,
+             c.name AS customer_name, ut.amount AS amount,
+             'Utang Payment' AS type_label, 'completed' AS status
+      FROM utang_transactions ut
+      JOIN customers c ON c.id = ut.customer_id
+      WHERE ut.type = 'payment'
+    )
+  `;
+
+  try {
+    const rows = await pool.query(
+      `${cte}
+       SELECT * FROM combined
+       WHERE created_at::date BETWEEN $1 AND $2
+         AND ($3 = 'All' OR type_label = $3)
+         AND ($4 = 'All' OR status = $4)
+       ORDER BY created_at DESC
+       LIMIT $5 OFFSET $6`,
+      [...params, Number(limit), offset]
+    );
+    const countResult = await pool.query(
+      `${cte}
+       SELECT COUNT(*) FROM combined
+       WHERE created_at::date BETWEEN $1 AND $2
+         AND ($3 = 'All' OR type_label = $3)
+         AND ($4 = 'All' OR status = $4)`,
+      params
+    );
+
+    res.json({
+      transactions: rows.rows,
+      total: Number(countResult.rows[0].count),
+      page: Number(page),
+      limit: Number(limit),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch transactions' });
   }
 });
 
-app.get('/api/transactions/:id', async (req, res) => {
+app.get('/api/transactions/:source/:id', requireAuth, async (req, res) => {
+  const { source, id } = req.params;
   try {
-    const sale = await pool.query(
-      `SELECT s.*, c.name AS customer_name FROM sales s
-       LEFT JOIN customers c ON c.id = s.customer_id WHERE s.id = $1`,
-      [req.params.id]
-    );
-    if (sale.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (source === 'sale') {
+      const sale = await pool.query(
+        `SELECT s.*, c.name AS customer_name FROM sales s
+         LEFT JOIN customers c ON c.id = s.customer_id WHERE s.id = $1`,
+        [id]
+      );
+      if (sale.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+      const items = await pool.query(
+        `SELECT si.*, p.name AS product_name FROM sale_items si
+         JOIN products p ON p.id = si.product_id WHERE si.sale_id = $1`,
+        [id]
+      );
+      return res.json({ source: 'sale', ...sale.rows[0], items: items.rows });
+    }
 
-    const items = await pool.query(
-      `SELECT si.*, p.name AS product_name FROM sale_items si
-       JOIN products p ON p.id = si.product_id WHERE si.sale_id = $1`,
-      [req.params.id]
-    );
-    res.json({ ...sale.rows[0], items: items.rows });
+    if (source === 'utang_payment') {
+      const payment = await pool.query(
+        `SELECT ut.*, c.name AS customer_name FROM utang_transactions ut
+         JOIN customers c ON c.id = ut.customer_id WHERE ut.id = $1`,
+        [id]
+      );
+      if (payment.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+      return res.json({ source: 'utang_payment', ...payment.rows[0] });
+    }
+
+    res.status(400).json({ error: 'Invalid source' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch transaction detail' });

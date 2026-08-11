@@ -35,6 +35,10 @@ function Utang() {
       setError('Enter a valid payment amount.');
       return;
     }
+    if (Number(paymentAmount) > Number(selectedCustomer.balance)) {
+      setError(`Payment exceeds current balance of ₱${Number(selectedCustomer.balance).toFixed(2)}.`);
+      return;
+    }
     try {
       const res = await apiFetch(`${UTANG_API}/payment`, {
         method: 'POST',
@@ -100,6 +104,7 @@ function Utang() {
               <div className="flex gap-2 mb-4">
                 <input
                   type="number"
+                  max={selectedCustomer.balance}
                   placeholder="Payment amount"
                   value={paymentAmount}
                   onChange={(e) => setPaymentAmount(e.target.value)}
