@@ -1,9 +1,11 @@
 import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
+import { useRef } from 'react';
 
 const UTANG_API = '/utang';
 
 function Utang() {
+  const detailRef = useRef(null);
   const [ledger, setLedger] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [history, setHistory] = useState([]);
@@ -25,6 +27,7 @@ function Utang() {
     apiFetch(`${UTANG_API}/${customer.customer_id}`)
       .then((res) => res.json())
       .then(setHistory);
+      detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   const recordPayment = async () => {
@@ -54,7 +57,7 @@ function Utang() {
   const totalOutstanding = ledger.reduce((sum, c) => sum + Number(c.balance), 0);
 
   return (
-    <div>
+    <div ref={detailRef} className="bg-surface border border-outline-variant rounded-xl p-4">
       <h1 className="text-2xl font-bold text-on-surface mb-1">Utang Management</h1>
       <p className="text-on-surface-variant mb-6">Track and manage customer credit balances.</p>
 
@@ -63,7 +66,7 @@ function Utang() {
         <p className="text-2xl font-bold text-error">₱{totalOutstanding.toFixed(2)}</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Ledger list */}
         <div className="bg-surface border border-outline-variant rounded-xl p-4">
           <h2 className="font-semibold text-on-surface mb-3">Utang Ledger</h2>

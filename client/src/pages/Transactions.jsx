@@ -26,7 +26,7 @@ function Transactions() {
       <h1 className="text-2xl font-bold text-on-surface mb-1">Transaction History</h1>
       <p className="text-on-surface-variant mb-6">A full log of every sale recorded.</p>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="col-span-2 bg-surface border border-outline-variant rounded-xl overflow-hidden">
           <table className="w-full text-left text-sm">
             <thead className="bg-surface-container-low text-on-surface-variant">
