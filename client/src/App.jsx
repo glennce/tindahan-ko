@@ -9,6 +9,7 @@ import Utang from './pages/Utang';
 import Transactions from './pages/Transactions';
 import Reports from './pages/Reports';
 import More from './pages/More';
+import Customers from './pages/Customers';
 
 function App() {
   return (
@@ -29,6 +30,7 @@ function App() {
         <Route path="transactions" element={<Transactions />} />
         <Route path="reports" element={<Reports />} />
         <Route path="more" element={<More />} />
+        <Route path="customers" element={<Customers />} />
       </Route>
     </Routes>
   );

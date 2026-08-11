@@ -16,6 +16,9 @@ function More() {
       <p className="text-on-surface-variant mb-6">{user?.name}</p>
 
       <div className="bg-surface border border-outline-variant rounded-xl divide-y divide-outline-variant overflow-hidden">
+        <Link to="/customers" className="block px-4 py-3 text-on-surface font-medium">
+          Customers
+        </Link>
         <Link to="/transactions" className="block px-4 py-3 text-on-surface font-medium">
           Transactions
         </Link>

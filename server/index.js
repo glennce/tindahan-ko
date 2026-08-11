@@ -130,7 +130,17 @@ app.delete('/api/products/:id', requireAuth, async (req, res) => {
 
 app.get('/api/customers', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM customers ORDER BY name');
+    const result = await pool.query(`
+      SELECT c.*, COALESCE(latest.balance_after, 0) AS balance
+      FROM customers c
+      LEFT JOIN LATERAL (
+        SELECT balance_after FROM utang_transactions
+        WHERE customer_id = c.id
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      ) latest ON true
+      ORDER BY c.name
+    `);
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -150,6 +160,40 @@ app.post('/api/customers', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to create customer' });
+  }
+});
+
+app.put('/api/customers/:id', requireAuth, async (req, res) => {
+  const { name, contact_number, credit_limit } = req.body;
+  if (!name) return res.status(400).json({ error: 'Name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE customers SET name = $1, contact_number = $2, credit_limit = $3
+       WHERE id = $4 RETURNING *`,
+      [name, contact_number, credit_limit || 0, req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update customer' });
+  }
+});
+
+app.delete('/api/customers/:id', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query('DELETE FROM customers WHERE id = $1 RETURNING *', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
+    res.json({ message: 'Customer deleted' });
+  } catch (err) {
+    // Foreign key violation — this customer has sales/utang history linked to them
+    if (err.code === '23503') {
+      return res.status(409).json({
+        error: 'Cannot delete this customer — they have existing sales or utang history.',
+      });
+    }
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete customer' });
   }
 });
 
@@ -198,13 +242,30 @@ app.post('/api/sales', requireAuth, async (req, res) => {
     }
 
     if (payment_method === 'utang') {
+      const custResult = await client.query(
+        `SELECT name, credit_limit FROM customers WHERE id = $1`,
+        [customer_id]
+      );
+      if (custResult.rows.length === 0) {
+        throw new Error('Customer not found');
+      }
+      const { name: customerName, credit_limit } = custResult.rows[0];
+      const creditLimit = Number(credit_limit);
+    
       const lastUtang = await client.query(
-        `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY id DESC LIMIT 1`,
+        `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
         [customer_id]
       );
       const previousBalance = lastUtang.rows.length ? Number(lastUtang.rows[0].balance_after) : 0;
       const newBalance = previousBalance + total_amount;
-
+    
+      if (newBalance > creditLimit) {
+        const available = Math.max(creditLimit - previousBalance, 0);
+        throw new Error(
+          `This sale exceeds ${customerName}'s credit limit. Available credit: ₱${available.toFixed(2)}`
+        );
+      }
+    
       await client.query(
         `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
          VALUES ($1, $2, 'charge', $3, $4, $5)`,

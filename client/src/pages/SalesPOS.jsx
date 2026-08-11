@@ -1,5 +1,6 @@
 import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
+import CustomerModal from '../components/CustomerModal';
 
 const PRODUCTS_API = '/products';
 const CUSTOMERS_API = '/customers';
@@ -16,6 +17,7 @@ function SalesPOS() {
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
+  const [customerModalOpen, setCustomerModalOpen] = useState(false);
 
   const loadProducts = () => {
     apiFetch(PRODUCTS_API).then((res) => res.json()).then(setProducts);
@@ -67,6 +69,13 @@ function SalesPOS() {
   };
 
   const total = cart.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+  const selectedCustomerInfo = customerId
+  ? (() => {
+      const c = customers.find((c) => c.id === Number(customerId));
+      if (!c) return null;
+      return { available: Number(c.credit_limit) - Number(c.balance) };
+    })()
+  : null;
   const change =
     paymentMethod === 'cash' && amountTendered ? Number(amountTendered) - total : null;
 
@@ -91,6 +100,10 @@ function SalesPOS() {
     }
     if (paymentMethod === 'cash' && (!amountTendered || Number(amountTendered) < total)) {
       setError('Cash received must be at least the total amount.');
+      return;
+    }
+    if (paymentMethod === 'utang' && selectedCustomerInfo && total > selectedCustomerInfo.available) {
+      setError(`Exceeds available credit (₱${selectedCustomerInfo.available.toFixed(2)})`);
       return;
     }
 
@@ -122,7 +135,25 @@ function SalesPOS() {
     }
   };
 
+  const handleSaveCustomer = async (formData) => {
+  try {
+    const res = await apiFetch('/customers', {
+      method: 'POST',
+      body: JSON.stringify(formData),
+    });
+    const newCustomer = await res.json();
+    if (!res.ok) throw new Error(newCustomer.error || 'Failed to add customer');
+
+    setCustomers((prev) => [...prev, newCustomer]); // add to the dropdown list
+    setCustomerId(String(newCustomer.id));           // auto-select them immediately
+    setCustomerModalOpen(false);
+  } catch (err) {
+    alert(err.message);
+  }
+};
+
   return (
+    <>
     <div className="lg:flex lg:gap-6 h-full">
       {/* Product grid */}
       <div className="flex-1">
@@ -236,16 +267,34 @@ function SalesPOS() {
           </div>
 
           {paymentMethod === 'utang' && (
-            <select
-              value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
-              className="w-full border border-outline-variant rounded-lg px-3 py-2 mb-3"
-            >
-              <option value="">Select customer...</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+            <>
+              <div className="flex gap-2 mb-2">
+                <select
+                  value={customerId}
+                  onChange={(e) => setCustomerId(e.target.value)}
+                  className="flex-1 border border-outline-variant rounded-lg px-3 py-2"
+                >
+                  <option value="">Select customer...</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setCustomerModalOpen(true)}
+                  className="px-3 py-2 rounded-lg border border-outline-variant text-primary text-sm font-medium whitespace-nowrap"
+                >
+                  + New
+                </button>
+              </div>
+              {selectedCustomerInfo && (
+                <p className={`text-sm mb-3 ${
+                  total > selectedCustomerInfo.available ? 'text-error' : 'text-on-surface-variant'
+                }`}>
+                  Available credit: ₱{selectedCustomerInfo.available.toFixed(2)}
+                </p>
+              )}
+            </>
           )}
 
           {paymentMethod === 'cash' && (
@@ -291,6 +340,13 @@ function SalesPOS() {
         </button>
       )}
     </div>
+    <CustomerModal
+      isOpen={customerModalOpen}
+      onClose={() => setCustomerModalOpen(false)}
+      onSave={handleSaveCustomer}
+      initialData={null}
+    />
+    </>
   );
 }
 
