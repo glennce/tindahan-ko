@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import PaymentModal from '../components/PaymentModal';
+import { useToast } from '../context/ToastContext';
 
 const UTANG_API = '/utang';
 
@@ -20,6 +21,7 @@ function Utang() {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [history, setHistory] = useState([]);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const { showToast } = useToast();
 
   const loadAll = () => {
     apiFetch(UTANG_API).then((res) => res.json()).then(setLedger);
@@ -54,10 +56,11 @@ function Utang() {
 
       setPaymentModalOpen(false);
       loadAll();
+      showToast('Payment recorded');
       const updated = ledger.find((c) => c.customer_id === payload.customer_id);
       if (updated) selectCustomer({ ...updated, customer_id: payload.customer_id });
     } catch (err) {
-      alert(err.message);
+      showToast(err.message, 'error');
     }
   };
 

@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import CustomerModal from '../components/CustomerModal';
+import { useToast } from '../context/ToastContext';
+import ConfirmModal from '../components/ConfirmModal';
 
 const API = '/customers';
 
@@ -10,6 +12,8 @@ function Customers() {
   const [error, setError] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState(null);
+  const { showToast } = useToast();
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
 
   const fetchCustomers = () => {
     setLoading(true);
@@ -50,20 +54,27 @@ function Customers() {
       if (!res.ok) throw new Error(data.error || 'Save failed');
       setModalOpen(false);
       fetchCustomers();
+      showToast(isEditing ? 'Customer updated' : 'Customer added');
     } catch (err) {
-      alert(err.message);
+      showToast(err.message, 'error');
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!confirm('Delete this customer? This cannot be undone.')) return;
+  const requestDelete = (id) => {
+    setPendingDeleteId(id);
+  };
+
+  const confirmDelete = async () => {
+    const id = pendingDeleteId;
+    setPendingDeleteId(null);
     try {
       const res = await apiFetch(`${API}/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Delete failed');
       fetchCustomers();
+      showToast('Customer deleted');
     } catch (err) {
-      alert(err.message); // e.g. "Cannot delete — they have existing sales or utang history."
+      showToast(err.message, 'error'); // catches the "has existing sales/utang" message too
     }
   };
 
@@ -105,7 +116,7 @@ function Customers() {
               <span className="text-on-surface-variant text-sm">Limit: ₱{Number(c.credit_limit).toFixed(2)}</span>
               <div className="space-x-3">
                 <button onClick={() => openEditModal(c)} className="text-primary text-sm font-medium">Edit</button>
-                <button onClick={() => handleDelete(c.id)} className="text-error text-sm font-medium">Delete</button>
+                <button onClick={() => requestDelete(c.id)} className="text-error text-sm font-medium">Delete</button>
               </div>
             </div>
           </div>
@@ -141,18 +152,28 @@ function Customers() {
                 </td>
                 <td className="px-4 py-3 space-x-3">
                   <button onClick={() => openEditModal(c)} className="text-primary text-sm font-medium">Edit</button>
-                  <button onClick={() => handleDelete(c.id)} className="text-error text-sm font-medium">Delete</button>
+                  <button onClick={() => requestDelete(c.id)} className="text-error text-sm font-medium">Delete</button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
       <CustomerModal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         onSave={handleSave}
         initialData={editingCustomer}
+      />
+
+      <ConfirmModal
+        isOpen={!!pendingDeleteId}
+        title="Delete this customer?"
+        message="This cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDeleteId(null)}
       />
     </div>
   );

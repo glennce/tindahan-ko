@@ -1,6 +1,8 @@
 import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 import CustomerModal from '../components/CustomerModal';
+import { useToast } from '../context/ToastContext';
+import SaleSuccessModal from '../components/SaleSuccessModal';
 
 const PRODUCTS_API = '/products';
 const CUSTOMERS_API = '/customers';
@@ -21,6 +23,8 @@ function SalesPOS() {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
   const [discount, setDiscount] = useState('');
+  const { showToast } = useToast();
+  const [completedSale, setCompletedSale] = useState(null);
 
   const loadProducts = () => {
     apiFetch(PRODUCTS_API).then((res) => res.json()).then(setProducts);
@@ -102,22 +106,20 @@ function SalesPOS() {
   };
 
   const handleCompleteSale = async () => {
-    setError(null);
-
     if (cart.length === 0) {
-      setError('Cart is empty.');
+      showToast('Cart is empty.', 'error');
       return;
     }
     if (paymentMethod === 'utang' && !customerId) {
-      setError('Select a customer for utang sales.');
+      showToast('Select a customer for utang sales.', 'error');
       return;
     }
     if (paymentMethod === 'cash' && (!amountTendered || Number(amountTendered) < total)) {
-      setError('Cash received must be at least the total amount.');
+      showToast('Cash received must be at least the total amount.', 'error');
       return;
     }
     if (paymentMethod === 'utang' && selectedCustomerInfo && total > selectedCustomerInfo.available) {
-      setError(`Exceeds available credit (₱${selectedCustomerInfo.available.toFixed(2)})`);
+      showToast(`Exceeds available credit (₱${selectedCustomerInfo.available.toFixed(2)})`, 'error');
       return;
     }
 
@@ -141,31 +143,31 @@ function SalesPOS() {
       if (!res.ok) throw new Error(data.error || 'Sale failed');
 
       resetSale();
-      loadProducts(); // refresh stock counts from the server
-      alert('Sale completed!');
+      loadProducts();
+      setCompletedSale(data);
     } catch (err) {
-      setError(err.message);
+      showToast(err.message, 'error');
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleSaveCustomer = async (formData) => {
-  try {
-    const res = await apiFetch('/customers', {
-      method: 'POST',
-      body: JSON.stringify(formData),
-    });
-    const newCustomer = await res.json();
-    if (!res.ok) throw new Error(newCustomer.error || 'Failed to add customer');
-
-    setCustomers((prev) => [...prev, newCustomer]); // add to the dropdown list
-    setCustomerId(String(newCustomer.id));           // auto-select them immediately
-    setCustomerModalOpen(false);
-  } catch (err) {
-    alert(err.message);
-  }
-};
+    try {
+      const res = await apiFetch('/customers', {
+        method: 'POST',
+        body: JSON.stringify(formData),
+      });
+      const newCustomer = await res.json();
+      if (!res.ok) throw new Error(newCustomer.error || 'Failed to add customer');
+    
+      setCustomers((prev) => [...prev, newCustomer]); // add to the dropdown list
+      setCustomerId(String(newCustomer.id));           // auto-select them immediately
+      setCustomerModalOpen(false);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
 
   return (
     <>
@@ -399,6 +401,12 @@ function SalesPOS() {
       onClose={() => setCustomerModalOpen(false)}
       onSave={handleSaveCustomer}
       initialData={null}
+    />
+    <SaleSuccessModal
+      isOpen={!!completedSale}
+      sale={completedSale}
+      onClose={() => setCompletedSale(null)}
+      onNewSale={() => setCompletedSale(null)}
     />
     </>
   );

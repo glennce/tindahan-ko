@@ -2,6 +2,8 @@ import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 import ProductModal from '../components/ProductModal';
 import StockInModal from '../components/StockInModal';
+import { useToast } from '../context/ToastContext';
+import ConfirmModal from '../components/ConfirmModal';
 
 const API = '/products';
 
@@ -14,6 +16,8 @@ function Inventory() {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
   const [stockInOpen, setStockInOpen] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const { showToast } = useToast();
 
   const fetchProducts = () => {
     setLoading(true);
@@ -66,9 +70,10 @@ function Inventory() {
       });
       if (!res.ok) throw new Error('Save failed');
       setModalOpen(false);
-      fetchProducts(); // refresh the list with the latest data from the server
+      fetchProducts();
+      showToast(isEditing ? 'Product updated' : 'Product added'); // refresh the list with the latest data from the server
     } catch (err) {
-      alert(err.message);
+      showToast(err.message, 'error');
     }
   };
 
@@ -82,19 +87,26 @@ function Inventory() {
       if (!res.ok) throw new Error(result.error || 'Restock failed');
       setStockInOpen(false);
       fetchProducts();
+      showToast('Stock updated');
     } catch (err) {
-      alert(err.message);
+      showToast(err.message, 'error');
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!confirm('Delete this product? This cannot be undone.')) return;
+  const requestDelete = (id) => {
+    setPendingDeleteId(id);
+  };
+
+  const confirmDelete = async () => {
+    const id = pendingDeleteId;
+    setPendingDeleteId(null);
     try {
       const res = await apiFetch(`${API}/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       fetchProducts();
+      showToast('Product deleted');
     } catch (err) {
-      alert(err.message);
+      showToast(err.message, 'error');
     }
   };
 
@@ -175,7 +187,7 @@ function Inventory() {
                   <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium">
                     Edit
                   </button>
-                  <button onClick={() => handleDelete(product.id)} className="text-error text-sm font-medium">
+                  <button onClick={() => requestDelete(product.id)} className="text-error text-sm font-medium">
                     Delete
                   </button>
                 </div>
@@ -214,7 +226,7 @@ function Inventory() {
                     <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium">
                       Edit
                     </button>
-                    <button onClick={() => handleDelete(product.id)} className="text-error text-sm font-medium">
+                    <button onClick={() => requestDelete(product.id)} className="text-error text-sm font-medium">
                       Delete
                     </button>
                   </td>
@@ -237,6 +249,15 @@ function Inventory() {
         onClose={() => setStockInOpen(false)}
         onSave={handleStockIn}
         products={products}
+      />
+      
+      <ConfirmModal
+        isOpen={!!pendingDeleteId}
+        title="Delete this product?"
+        message="This cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDeleteId(null)}
       />
     </div>
   );

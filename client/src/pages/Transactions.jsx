@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import { Eye } from 'lucide-react';
+import { useToast } from '../context/ToastContext';
+import ConfirmModal from '../components/ConfirmModal';
 
 const API = '/transactions';
 const TYPE_OPTIONS = ['All', 'Sale (Cash)', 'Sale (GCash)', 'Sale (Utang)', 'Utang Payment'];
@@ -22,6 +24,8 @@ function Transactions() {
   const [status, setStatus] = useState('All');
   const [page, setPage] = useState(1);
   const limit = 10;
+  const { showToast } = useToast();
+  const [pendingVoidId, setPendingVoidId] = useState(null);
 
   const [data, setData] = useState({ transactions: [], total: 0 });
   const [selected, setSelected] = useState(null);
@@ -39,16 +43,22 @@ function Transactions() {
     apiFetch(`${API}/${t.source}/${t.id}`).then((res) => res.json()).then(setSelected);
   };
 
-  const handleVoid = async (saleId) => {
-    if (!confirm('Void this sale? This restores stock and reverses any utang charge.')) return;
+  const requestVoid = (saleId) => {
+    setPendingVoidId(saleId);
+  };
+
+  const confirmVoid = async () => {
+    const saleId = pendingVoidId;
+    setPendingVoidId(null);
     try {
       const res = await apiFetch(`/sales/${saleId}/void`, { method: 'POST' });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error);
       loadTransactions();
       setSelected(null);
+      showToast('Sale voided successfully');
     } catch (err) {
-      alert(err.message);
+      showToast(err.message, 'error');
     }
   };
 
@@ -217,7 +227,7 @@ function Transactions() {
                     </div>
                     {selected.status === 'completed' && (
                       <button
-                        onClick={() => handleVoid(selected.id)}
+                        onClick={() => requestVoid(selected.id)}
                         className="w-full mt-4 border border-error text-error text-sm font-medium py-2 rounded-lg"
                       >
                         Void Sale
@@ -244,6 +254,14 @@ function Transactions() {
             </div>
           </>
         )}
+        <ConfirmModal
+          isOpen={!!pendingVoidId}
+          title="Void this sale?"
+          message="This restores stock and reverses any utang charge. This cannot be undone."
+          confirmLabel="Void Sale"
+          onConfirm={confirmVoid}
+          onCancel={() => setPendingVoidId(null)}
+        />
       </div>
   );
 }
