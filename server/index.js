@@ -330,7 +330,7 @@ app.post('/api/sales/:id/void', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/dashboard', async (req, res) => {
+app.get('/api/dashboard',requireAuth, async (req, res) => {
   try {
     const salesToday = await pool.query(`
       SELECT COALESCE(SUM(total_amount),0) AS total_sales, COUNT(*) AS transaction_count
@@ -395,6 +395,55 @@ app.get('/api/dashboard', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load dashboard data' });
+  }
+});
+
+app.get('/api/dashboard/trend', requireAuth, async (req, res) => {
+  const { range = 'today' } = req.query;
+
+  try {
+    if (range === 'today') {
+      const result = await pool.query(`
+        SELECT EXTRACT(HOUR FROM created_at)::int AS bucket, SUM(total_amount) AS total
+        FROM sales
+        WHERE created_at::date = CURRENT_DATE AND status = 'completed'
+        GROUP BY bucket
+        ORDER BY bucket
+      `);
+      const map = Object.fromEntries(result.rows.map((r) => [r.bucket, Number(r.total)]));
+      const trend = Array.from({ length: 24 }, (_, hour) => ({
+        label: hour,
+        total: map[hour] || 0,
+      }));
+      return res.json({ granularity: 'hour', trend });
+    }
+
+    if (range === 'week' || range === 'month') {
+      const days = range === 'week' ? 6 : 29; // 7 or 30 days including today
+      const result = await pool.query(`
+        SELECT created_at::date AS bucket, SUM(total_amount) AS total
+        FROM sales
+        WHERE created_at::date BETWEEN CURRENT_DATE - $1::int AND CURRENT_DATE
+          AND status = 'completed'
+        GROUP BY bucket
+        ORDER BY bucket
+      `, [days]);
+      const map = Object.fromEntries(result.rows.map((r) => [r.bucket.toISOString().slice(0, 10), Number(r.total)]));
+
+      const trend = [];
+      for (let i = days; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        const key = d.toISOString().slice(0, 10);
+        trend.push({ label: key, total: map[key] || 0 });
+      }
+      return res.json({ granularity: 'day', trend });
+    }
+
+    res.status(400).json({ error: 'Invalid range' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load trend data' });
   }
 });
 
