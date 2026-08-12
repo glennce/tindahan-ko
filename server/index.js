@@ -12,6 +12,20 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+function previousPeriod(start, end) {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  const rangeDays = Math.round((endDate - startDate) / 86400000) + 1;
+  const prevEnd = new Date(startDate);
+  prevEnd.setDate(prevEnd.getDate() - 1);
+  const prevStart = new Date(prevEnd);
+  prevStart.setDate(prevStart.getDate() - rangeDays + 1);
+  return {
+    prevStart: prevStart.toISOString().slice(0, 10),
+    prevEnd: prevEnd.toISOString().slice(0, 10),
+  };
+}
+
 // Sanity-check route
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Tindahan Ko server is running' });
@@ -718,6 +732,234 @@ app.get('/api/reports', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load report' });
+  }
+});
+
+app.get('/api/reports/sales', requireAuth, async (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+  const { prevStart, prevEnd } = previousPeriod(start, end);
+
+  try {
+    const current = await pool.query(
+      `SELECT COALESCE(SUM(total_amount),0) AS total, COUNT(*) AS count
+       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'`,
+      [start, end]
+    );
+    const previous = await pool.query(
+      `SELECT COALESCE(SUM(total_amount),0) AS total
+       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'`,
+      [prevStart, prevEnd]
+    );
+    const trend = await pool.query(
+      `SELECT created_at::date AS day, SUM(total_amount) AS total
+       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'
+       GROUP BY day ORDER BY day`,
+      [start, end]
+    );
+    const categories = await pool.query(
+      `SELECT COALESCE(p.category, 'Uncategorized') AS category, SUM(si.subtotal) AS revenue
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+       JOIN products p ON p.id = si.product_id
+       WHERE s.created_at::date BETWEEN $1 AND $2
+       GROUP BY p.category ORDER BY revenue DESC`,
+      [start, end]
+    );
+
+    res.json({
+      total_sales: Number(current.rows[0].total),
+      transaction_count: Number(current.rows[0].count),
+      prev_total_sales: Number(previous.rows[0].total),
+      trend: trend.rows,
+      categories: categories.rows,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load sales report' });
+  }
+});
+
+app.get('/api/reports/profit', requireAuth, async (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+  const { prevStart, prevEnd } = previousPeriod(start, end);
+
+  try {
+    const grossProfit = async (s, e) => {
+      const r = await pool.query(
+        `SELECT COALESCE(SUM((si.unit_price - p.cost_price) * si.quantity),0) AS gross_profit
+         FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         JOIN products p ON p.id = si.product_id
+         WHERE s.created_at::date BETWEEN $1 AND $2`,
+        [s, e]
+      );
+      return Number(r.rows[0].gross_profit);
+    };
+
+    const currentGross = await grossProfit(start, end);
+    const prevGross = await grossProfit(prevStart, prevEnd);
+
+    const expensesResult = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at::date BETWEEN $1 AND $2`,
+      [start, end]
+    );
+    const totalExpenses = Number(expensesResult.rows[0].total);
+    const netProfit = currentGross - totalExpenses;
+
+    const trend = await pool.query(
+      `SELECT s.created_at::date AS day,
+              SUM((si.unit_price - p.cost_price) * si.quantity) AS profit
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+       JOIN products p ON p.id = si.product_id
+       WHERE s.created_at::date BETWEEN $1 AND $2
+       GROUP BY day ORDER BY day`,
+      [start, end]
+    );
+
+    res.json({
+      gross_profit: currentGross,
+      prev_gross_profit: prevGross,
+      total_expenses: totalExpenses,
+      net_profit: netProfit,
+      margin_pct: currentGross > 0 ? (currentGross / (currentGross + totalExpenses)) * 100 : 0,
+      trend: trend.rows,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load profit report' });
+  }
+});
+
+app.get('/api/reports/inventory', requireAuth, async (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+
+  try {
+    const stockValue = await pool.query(
+      `SELECT COALESCE(SUM(cost_price * stock_quantity), 0) AS value FROM products`
+    );
+    const statusCounts = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE stock_quantity <= 0) AS out_of_stock,
+        COUNT(*) FILTER (WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold) AS low_stock,
+        COUNT(*) FILTER (WHERE stock_quantity > low_stock_threshold) AS available
+      FROM products
+    `);
+    const topMovers = await pool.query(
+      `SELECT p.id, p.name, SUM(si.quantity) AS qty_sold
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+       JOIN products p ON p.id = si.product_id
+       WHERE s.created_at::date BETWEEN $1 AND $2
+       GROUP BY p.id, p.name ORDER BY qty_sold DESC LIMIT 5`,
+      [start, end]
+    );
+    const slowMovers = await pool.query(
+      `SELECT p.id, p.name, p.stock_quantity
+       FROM products p
+       WHERE p.id NOT IN (
+         SELECT DISTINCT si.product_id FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         WHERE s.created_at::date BETWEEN $1 AND $2
+       )
+       ORDER BY p.stock_quantity DESC LIMIT 5`,
+      [start, end]
+    );
+
+    res.json({
+      total_stock_value: Number(stockValue.rows[0].value),
+      out_of_stock: Number(statusCounts.rows[0].out_of_stock),
+      low_stock: Number(statusCounts.rows[0].low_stock),
+      available: Number(statusCounts.rows[0].available),
+      top_movers: topMovers.rows,
+      slow_movers: slowMovers.rows,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load inventory report' });
+  }
+});
+
+app.get('/api/reports/utang', requireAuth, async (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+
+  try {
+    const outstanding = await pool.query(`
+      SELECT COALESCE(SUM(balance_after), 0) AS total
+      FROM (
+        SELECT DISTINCT ON (customer_id) customer_id, balance_after
+        FROM utang_transactions ORDER BY customer_id, created_at DESC, id DESC
+      ) latest WHERE balance_after > 0
+    `);
+    const periodActivity = await pool.query(
+      `SELECT
+        COALESCE(SUM(amount) FILTER (WHERE type = 'charge'), 0) AS charged,
+        COALESCE(SUM(amount) FILTER (WHERE type = 'payment'), 0) AS paid
+       FROM utang_transactions WHERE created_at::date BETWEEN $1 AND $2`,
+      [start, end]
+    );
+    const topDebtors = await pool.query(`
+      SELECT c.id, c.name, latest.balance_after AS balance
+      FROM customers c
+      JOIN LATERAL (
+        SELECT balance_after FROM utang_transactions
+        WHERE customer_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1
+      ) latest ON true
+      WHERE latest.balance_after > 0
+      ORDER BY latest.balance_after DESC LIMIT 5
+    `);
+
+    res.json({
+      total_outstanding: Number(outstanding.rows[0].total),
+      charged_this_period: Number(periodActivity.rows[0].charged),
+      paid_this_period: Number(periodActivity.rows[0].paid),
+      top_debtors: topDebtors.rows,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load utang report' });
+  }
+});
+
+app.get('/api/reports/expenses', requireAuth, async (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+  const { prevStart, prevEnd } = previousPeriod(start, end);
+
+  try {
+    const current = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at::date BETWEEN $1 AND $2`,
+      [start, end]
+    );
+    const previous = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at::date BETWEEN $1 AND $2`,
+      [prevStart, prevEnd]
+    );
+    const byCategory = await pool.query(
+      `SELECT category, SUM(amount) AS total FROM expenses
+       WHERE created_at::date BETWEEN $1 AND $2
+       GROUP BY category ORDER BY total DESC`,
+      [start, end]
+    );
+    const recent = await pool.query(
+      `SELECT * FROM expenses WHERE created_at::date BETWEEN $1 AND $2
+       ORDER BY created_at DESC LIMIT 20`,
+      [start, end]
+    );
+
+    res.json({
+      total_expenses: Number(current.rows[0].total),
+      prev_total_expenses: Number(previous.rows[0].total),
+      by_category: byCategory.rows,
+      recent: recent.rows,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load expenses report' });
   }
 });
 
