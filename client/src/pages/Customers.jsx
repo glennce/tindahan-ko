@@ -97,10 +97,10 @@ function Customers() {
               <span className={Number(c.balance) > 0 ? 'text-error font-medium text-sm' : 'text-on-surface-variant text-sm'}>
                 ₱{Number(c.balance).toFixed(2)} owed
               </span>
+            </div>
               <p className="text-on-surface-variant text-xs mt-1">
                 Available: ₱{(Number(c.credit_limit) - Number(c.balance)).toFixed(2)}
               </p>
-            </div>
             <div className="flex justify-between items-center mt-3">
               <span className="text-on-surface-variant text-sm">Limit: ₱{Number(c.credit_limit).toFixed(2)}</span>
               <div className="space-x-3">
@@ -121,8 +121,8 @@ function Customers() {
               <th className="px-4 py-3">Contact</th>
               <th className="px-4 py-3">Credit Limit</th>
               <th className="px-4 py-3">Current Balance</th>
-              <th className="px-4 py-3">Actions</th>
               <th className="px-4 py-3">Available Credit</th>
+              <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -147,7 +147,13 @@ function Customers() {
             ))}
           </tbody>
         </table>
-      </div> 
+      </div>
+      <CustomerModal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSave={handleSave}
+        initialData={editingCustomer}
+      />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
+import { Eye } from 'lucide-react';
 
 const API = '/transactions';
 const TYPE_OPTIONS = ['All', 'Sale (Cash)', 'Sale (GCash)', 'Sale (Utang)', 'Utang Payment'];
@@ -103,8 +104,7 @@ function Transactions() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 bg-surface border border-outline-variant rounded-xl overflow-hidden">
+        <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
           <table className="w-full text-left text-sm">
             <thead className="bg-surface-container-low text-on-surface-variant">
               <tr>
@@ -113,14 +113,14 @@ function Transactions() {
                 <th className="px-4 py-3">Total</th>
                 <th className="px-4 py-3">Type</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody>
               {data.transactions.map((t) => (
                 <tr
                   key={`${t.source}-${t.id}`}
-                  onClick={() => viewDetail(t)}
-                  className={`border-t border-outline-variant cursor-pointer hover:bg-surface-container-low ${
+                  className={`border-t border-outline-variant hover:bg-surface-container-low ${
                     t.status === 'voided' ? 'opacity-50' : ''
                   }`}
                 >
@@ -141,10 +141,19 @@ function Transactions() {
                       {t.status}
                     </span>
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      onClick={() => viewDetail(t)}
+                      className="p-1.5 text-primary hover:bg-primary-container hover:text-on-primary rounded-md transition-colors"
+                      title="View Details"
+                    >
+                      <Eye size={18} />
+                    </button>
+                  </td>
                 </tr>
               ))}
               {data.transactions.length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-6 text-center text-on-surface-variant">No transactions in this range.</td></tr>
+                <tr><td colSpan={6} className="px-4 py-6 text-center text-on-surface-variant">No transactions in this range.</td></tr>
               )}
             </tbody>
           </table>
@@ -161,73 +170,81 @@ function Transactions() {
           </div>
         </div>
 
-        <div className="bg-surface border border-outline-variant rounded-xl p-4">
-          {!selected ? (
-            <p className="text-on-surface-variant text-sm">Click a row to see details.</p>
-          ) : selected.source === 'sale' ? (
-            <>
-              <h2 className="font-semibold text-on-surface mb-1">Sale #{selected.id}</h2>
-              <p className="text-on-surface-variant text-sm mb-3">
-                {selected.customer_name || 'Walk-in'} · {new Date(selected.created_at).toLocaleString()}
-              </p>
-              <div className="space-y-2 mb-3">
-                {selected.items.map((item) => (
-                  <div key={item.id} className="flex justify-between text-sm border-t border-outline-variant pt-2">
-                    <span className="text-on-surface">{item.product_name} × {item.quantity}</span>
-                    <span className="text-on-surface-variant">₱{Number(item.subtotal).toFixed(2)}</span>
-                  </div>
-                ))}
+        {selected && (
+          <>
+            <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setSelected(null)} />
+            <div className="fixed inset-y-0 right-0 w-full max-w-md bg-surface shadow-2xl z-50 flex flex-col border-l border-outline-variant">
+              <div className="flex justify-between items-center px-4 py-3 border-b border-outline-variant">
+                <h2 className="font-semibold text-on-surface">Transaction Details</h2>
+                <button onClick={() => setSelected(null)} className="text-on-surface-variant text-xl">
+                  ✕
+                </button>
               </div>
-              <div className="text-sm space-y-1 border-t border-outline-variant pt-2">
-                <div className="flex justify-between text-on-surface-variant">
-                  <span>Subtotal</span><span>₱{Number(selected.subtotal).toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between text-error">
-                  <span>Discount</span><span>-₱{Number(selected.discount_amount).toFixed(2)}</span>
-                </div>
-                {selected.payment_method === 'cash' && (
+              <div className="flex-1 overflow-y-auto p-4">
+                {selected.source === 'sale' ? (
                   <>
-                    <div className="flex justify-between text-on-surface-variant">
-                      <span>Cash Received</span><span>₱{Number(selected.amount_tendered).toFixed(2)}</span>
+                    <p className="text-on-surface-variant text-sm mb-3">
+                      #{selected.id} · {selected.customer_name || 'Walk-in'} · {new Date(selected.created_at).toLocaleString()}
+                    </p>
+                    <div className="space-y-2 mb-3">
+                      {selected.items.map((item) => (
+                        <div key={item.id} className="flex justify-between text-sm border-t border-outline-variant pt-2">
+                          <span className="text-on-surface">{item.product_name} × {item.quantity}</span>
+                          <span className="text-on-surface-variant">₱{Number(item.subtotal).toFixed(2)}</span>
+                        </div>
+                      ))}
                     </div>
-                    <div className="flex justify-between text-on-surface-variant">
-                      <span>Change</span><span>₱{Number(selected.change_amount).toFixed(2)}</span>
+                    <div className="text-sm space-y-1 border-t border-outline-variant pt-2">
+                      <div className="flex justify-between text-on-surface-variant">
+                        <span>Subtotal</span><span>₱{Number(selected.subtotal).toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-error">
+                        <span>Discount</span><span>-₱{Number(selected.discount_amount).toFixed(2)}</span>
+                      </div>
+                      {selected.payment_method === 'cash' && (
+                        <>
+                          <div className="flex justify-between text-on-surface-variant">
+                            <span>Cash Received</span><span>₱{Number(selected.amount_tendered).toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between text-on-surface-variant">
+                            <span>Change</span><span>₱{Number(selected.change_amount).toFixed(2)}</span>
+                          </div>
+                        </>
+                      )}
+                      <div className="flex justify-between font-bold text-on-surface pt-1 border-t border-outline-variant">
+                        <span>Total</span><span>₱{Number(selected.total_amount).toFixed(2)}</span>
+                      </div>
                     </div>
+                    {selected.status === 'completed' && (
+                      <button
+                        onClick={() => handleVoid(selected.id)}
+                        className="w-full mt-4 border border-error text-error text-sm font-medium py-2 rounded-lg"
+                      >
+                        Void Sale
+                      </button>
+                    )}
+                    {selected.status === 'voided' && (
+                      <p className="text-error text-sm font-medium mt-4 text-center">This sale has been voided.</p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p className="text-on-surface-variant text-sm mb-3">
+                      #{selected.id} · {selected.customer_name} · {new Date(selected.created_at).toLocaleString()}
+                    </p>
+                    <div className="flex justify-between font-bold text-on-surface border-t border-outline-variant pt-2">
+                      <span>Amount Paid</span><span>₱{Number(selected.amount).toFixed(2)}</span>
+                    </div>
+                    <p className="text-on-surface-variant text-sm mt-2">
+                      Balance after payment: ₱{Number(selected.balance_after).toFixed(2)}
+                    </p>
                   </>
                 )}
-                <div className="flex justify-between font-bold text-on-surface pt-1 border-t border-outline-variant">
-                  <span>Total</span><span>₱{Number(selected.total_amount).toFixed(2)}</span>
-                </div>
               </div>
-              {selected.status === 'completed' && (
-                <button
-                  onClick={() => handleVoid(selected.id)}
-                  className="w-full mt-4 border border-error text-error text-sm font-medium py-2 rounded-lg"
-                >
-                  Void Sale
-                </button>
-              )}
-              {selected.status === 'voided' && (
-                <p className="text-error text-sm font-medium mt-4 text-center">This sale has been voided.</p>
-              )}
-            </>
-          ) : (
-            <>
-              <h2 className="font-semibold text-on-surface mb-1">Utang Payment #{selected.id}</h2>
-              <p className="text-on-surface-variant text-sm mb-3">
-                {selected.customer_name} · {new Date(selected.created_at).toLocaleString()}
-              </p>
-              <div className="flex justify-between font-bold text-on-surface border-t border-outline-variant pt-2">
-                <span>Amount Paid</span><span>₱{Number(selected.amount).toFixed(2)}</span>
-              </div>
-              <p className="text-on-surface-variant text-sm mt-2">
-                Balance after payment: ₱{Number(selected.balance_after).toFixed(2)}
-              </p>
-            </>
-          )}
-        </div>
+            </div>
+          </>
+        )}
       </div>
-    </div>
   );
 }
 

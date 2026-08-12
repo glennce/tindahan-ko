@@ -430,8 +430,8 @@ app.get('/api/utang/:customerId', async (req, res) => {
 });
 
 // Record a payment against a customer's balance
-app.post('/api/utang/payment', async (req, res) => {
-  const { customer_id, amount, note } = req.body;
+app.post('/api/utang/payment', requireAuth, async (req, res) => {
+  const { customer_id, amount, payment_method, note } = req.body;
   if (!customer_id || !amount || amount <= 0) {
     return res.status(400).json({ error: 'Valid customer_id and amount are required' });
   }
@@ -442,7 +442,6 @@ app.post('/api/utang/payment', async (req, res) => {
     );
     const currentBalance = lastEntry.rows.length ? Number(lastEntry.rows[0].balance_after) : 0;
 
-    // New check — reject payments larger than what's actually owed
     if (Number(amount) > currentBalance) {
       return res.status(400).json({
         error: `Payment exceeds current balance. Customer owes ₱${currentBalance.toFixed(2)}.`,
@@ -452,14 +451,42 @@ app.post('/api/utang/payment', async (req, res) => {
     const newBalance = currentBalance - Number(amount);
 
     const result = await pool.query(
-      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, note)
-       VALUES ($1, 'payment', $2, $3, $4) RETURNING *`,
-      [customer_id, amount, newBalance, note || 'Payment received']
+      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note)
+       VALUES ($1, 'payment', $2, $3, $4, $5) RETURNING *`,
+      [customer_id, amount, newBalance, payment_method || 'cash', note || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to record payment' });
+  }
+});
+
+app.get('/api/utang/summary', requireAuth, async (req, res) => {
+  try {
+    const outstanding = await pool.query(`
+      SELECT COALESCE(SUM(balance_after), 0) AS total, COUNT(*) AS customer_count
+      FROM (
+        SELECT DISTINCT ON (customer_id) customer_id, balance_after
+        FROM utang_transactions
+        ORDER BY customer_id, created_at DESC, id DESC
+      ) latest
+      WHERE balance_after > 0
+    `);
+    const paymentsToday = await pool.query(`
+      SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
+      FROM utang_transactions
+      WHERE type = 'payment' AND created_at::date = CURRENT_DATE
+    `);
+    res.json({
+      total_outstanding: Number(outstanding.rows[0].total),
+      customers_with_balance: Number(outstanding.rows[0].customer_count),
+      payments_today: Number(paymentsToday.rows[0].total),
+      payments_today_count: Number(paymentsToday.rows[0].count),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load utang summary' });
   }
 });
 
