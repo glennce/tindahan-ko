@@ -126,7 +126,7 @@ function Inventory() {
           <h1 className="text-2xl lg:text-3xl font-bold text-on-surface">Inventory</h1>
           <p className="text-on-surface-variant">Manage your product catalog and stock levels.</p>
         </div>
-        <div className="mb-4 min-w-0">
+        <div className="mb-4">
           <input
             type="text"
             placeholder="Search products, SKU, or categories..."
@@ -134,12 +134,12 @@ function Inventory() {
             onChange={(e) => setSearch(e.target.value)}
             className="w-full border border-outline-variant rounded-lg px-4 py-2 mb-3"
           />
-          <div className="flex gap-2 flex-nowrap overflow-x-auto pb-1">
+          <div className="flex gap-2 flex-wrap">
             {categories.map((cat) => (
               <button
                 key={cat}
                 onClick={() => setActiveCategory(cat)}
-                className={`px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap shrink-0 ${
+                className={`px-3 py-1.5 rounded-full text-sm font-medium ${
                   activeCategory === cat
                     ? 'bg-primary text-on-primary'
                     : 'bg-surface-container-low text-on-surface-variant'
