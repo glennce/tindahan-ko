@@ -5,6 +5,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const pool = require('./db');
+const UTANG_MARKUP_PER_UNIT = 2.00; // ₱2 added per unit when payment_method is 'utang'
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -232,7 +233,11 @@ app.post('/api/sales', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+    const markupPerUnit = payment_method === 'utang' ? UTANG_MARKUP_PER_UNIT : 0;
+    const subtotal = items.reduce(
+      (sum, item) => sum + item.quantity * (item.unit_price + markupPerUnit),
+      0
+    );
     const discount = Number(discount_amount) || 0;
     const total_amount = Math.max(subtotal - discount, 0);
     const change_amount = payment_method === 'cash' ? (amount_tendered - total_amount) : null;
@@ -245,13 +250,14 @@ app.post('/api/sales', requireAuth, async (req, res) => {
     const sale = saleResult.rows[0];
 
     for (const item of items) {
-      const subtotal = item.quantity * item.unit_price;
+    const effectiveUnitPrice = item.unit_price + markupPerUnit;
+    const itemSubtotal = item.quantity * effectiveUnitPrice;
 
-      await client.query(
-        `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [sale.id, item.product_id, item.quantity, item.unit_price, subtotal]
-      );
+    await client.query(
+      `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [sale.id, item.product_id, item.quantity, effectiveUnitPrice, itemSubtotal]
+    );
 
       const stockResult = await client.query(
         `UPDATE products SET stock_quantity = stock_quantity - $1

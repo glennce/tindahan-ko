@@ -7,7 +7,7 @@ import SaleSuccessModal from '../components/SaleSuccessModal';
 const PRODUCTS_API = '/products';
 const CUSTOMERS_API = '/customers';
 const SALES_API = '/sales';
-
+const UTANG_MARKUP_PER_UNIT = 2; // Keep in sync with the same constant in server/index.js
 
 function SalesPOS() {
   const [products, setProducts] = useState([]);
@@ -97,7 +97,10 @@ function SalesPOS() {
     setCart((prev) => prev.filter((item) => item.product_id !== product_id));
   };
 
-  const subtotal = cart.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+  const subtotal = cart.reduce((sum, item) => {
+  const price = paymentMethod === 'utang' ? item.unit_price + UTANG_MARKUP_PER_UNIT : item.unit_price;
+  return sum + item.quantity * price;
+}, 0);
   const discountAmount = Number(discount) || 0;
   const total = Math.max(subtotal - discountAmount, 0);
   const selectedCustomerInfo = customerId
@@ -351,6 +354,12 @@ function SalesPOS() {
               </button>
             ))}
           </div>
+
+          {paymentMethod === 'utang' && (
+            <p className="text-xs text-on-surface-variant mb-2">
+              +₱{UTANG_MARKUP_PER_UNIT.toFixed(2)}/item utang markup included
+            </p>
+          )}
 
           {paymentMethod === 'utang' && (
             <>
