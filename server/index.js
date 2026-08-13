@@ -882,6 +882,19 @@ app.get('/api/reports/inventory', requireAuth, async (req, res) => {
       [start, end]
     );
 
+    const lowStockList = await pool.query(`
+      SELECT id, name, category, stock_quantity, low_stock_threshold
+      FROM products
+      WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold
+      ORDER BY stock_quantity ASC
+    `);
+    const outOfStockList = await pool.query(`
+      SELECT id, name, category, stock_quantity, low_stock_threshold
+      FROM products
+      WHERE stock_quantity <= 0
+      ORDER BY name ASC
+    `);
+
     res.json({
       total_stock_value: Number(stockValue.rows[0].value),
       out_of_stock: Number(statusCounts.rows[0].out_of_stock),
@@ -889,6 +902,8 @@ app.get('/api/reports/inventory', requireAuth, async (req, res) => {
       available: Number(statusCounts.rows[0].available),
       top_movers: topMovers.rows,
       slow_movers: slowMovers.rows,
+      low_stock_list: lowStockList.rows,
+      out_of_stock_list: outOfStockList.rows,
     });
   } catch (err) {
     console.error(err);

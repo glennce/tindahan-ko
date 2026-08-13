@@ -239,16 +239,56 @@ function ProfitReport({ data }) {
 }
 
 function InventoryReport({ data }) {
+  const handleExportLowStock = () => {
+    const rows = [
+      ['Product', 'Category', 'Current Stock', 'Threshold', 'Status'],
+      ...data.low_stock_list.map((p) => [p.name, p.category || '', p.stock_quantity, p.low_stock_threshold, 'Low Stock']),
+      ...data.out_of_stock_list.map((p) => [p.name, p.category || '', p.stock_quantity, p.low_stock_threshold, 'Out of Stock']),
+    ];
+    downloadCsv(`low-and-out-of-stock-${new Date().toISOString().slice(0, 10)}.csv`, rows);
+  };
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <StatCard label="Total Stock Value (Cost)" value={`₱${data.total_stock_value.toFixed(2)}`} icon={Package} />
-        <div className="bg-surface border border-outline-variant rounded-xl p-4 flex gap-4">
-          <div><p className="text-secondary font-bold text-xl">{data.available}</p><p className="text-xs text-on-surface-variant">Available</p></div>
-          <div><p className="text-orange-500 font-bold text-xl">{data.low_stock}</p><p className="text-xs text-on-surface-variant">Low Stock</p></div>
-          <div><p className="text-error font-bold text-xl">{data.out_of_stock}</p><p className="text-xs text-on-surface-variant">Out of Stock</p></div>
+      <div className="flex justify-between items-start">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1">
+          <StatCard label="Total Stock Value (Cost)" value={`₱${data.total_stock_value.toFixed(2)}`} icon={Package} />
+          <div className="bg-surface border border-outline-variant rounded-xl p-4 flex gap-4">
+            <div><p className="text-secondary font-bold text-xl">{data.available}</p><p className="text-xs text-on-surface-variant">Available</p></div>
+            <div><p className="text-orange-500 font-bold text-xl">{data.low_stock}</p><p className="text-xs text-on-surface-variant">Low Stock</p></div>
+            <div><p className="text-error font-bold text-xl">{data.out_of_stock}</p><p className="text-xs text-on-surface-variant">Out of Stock</p></div>
+          </div>
         </div>
       </div>
+
+      {(data.low_stock > 0 || data.out_of_stock > 0) && (
+        <div className="bg-surface border border-outline-variant rounded-xl p-4">
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="font-semibold text-on-surface">Restock List</h2>
+            <button
+              onClick={handleExportLowStock}
+              className="border border-outline-variant text-primary text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1"
+            >
+              <Download size={16} /> Export Restock List
+            </button>
+          </div>
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {data.out_of_stock_list.map((p) => (
+              <div key={p.id} className="flex justify-between text-sm py-1.5 border-t border-outline-variant">
+                <span className="text-on-surface">{p.name}</span>
+                <span className="text-error font-medium">Out of Stock</span>
+              </div>
+            ))}
+            {data.low_stock_list.map((p) => (
+              <div key={p.id} className="flex justify-between text-sm py-1.5 border-t border-outline-variant">
+                <span className="text-on-surface">{p.name}</span>
+                <span className="text-orange-600 font-medium">{p.stock_quantity} left (threshold: {p.low_stock_threshold})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-surface border border-outline-variant rounded-xl p-4">
           <h2 className="font-semibold text-on-surface mb-3">Top Movers</h2>
