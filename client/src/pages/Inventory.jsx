@@ -18,6 +18,8 @@ function Inventory() {
   const [stockInOpen, setStockInOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const { showToast } = useToast();
+  const [page, setPage] = useState(1);
+  const PER_PAGE = 20;
 
   const fetchProducts = () => {
     setLoading(true);
@@ -43,10 +45,17 @@ function Inventory() {
     const matchesCategory = activeCategory === 'All' || p.category === activeCategory;
     return matchesSearch && matchesCategory;
   });
+  
+    const totalPages = Math.max(Math.ceil(filteredProducts.length / PER_PAGE), 1);
+    const paginatedProducts = filteredProducts.slice((page - 1) * PER_PAGE, page * PER_PAGE);
 
   useEffect(() => {
     fetchProducts();
   }, []);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, activeCategory]);
 
   const openAddModal = () => {
     setEditingProduct(null);
@@ -168,7 +177,7 @@ function Inventory() {
 
       {/* Mobile: stacked cards, hidden at lg and above */}
       <div className="lg:hidden space-y-3">
-        {filteredProducts.map((product) => {
+        {paginatedProducts.map((product) => {
           const status = getStatus(product);
           return (
             <div key={product.id} className="bg-surface border border-outline-variant rounded-xl p-4">
@@ -210,7 +219,7 @@ function Inventory() {
             </tr>
           </thead>
           <tbody>
-            {filteredProducts.map((product) => {
+            {paginatedProducts.map((product) => {
               const status = getStatus(product);
               return (
                 <tr key={product.id} className="border-t border-outline-variant">
@@ -235,6 +244,29 @@ function Inventory() {
             })}
           </tbody>
         </table>
+      </div>
+
+      <div className="flex justify-between items-center mt-4 text-sm text-on-surface-variant">
+        <span>
+          Showing {filteredProducts.length === 0 ? 0 : (page - 1) * PER_PAGE + 1}–{Math.min(page * PER_PAGE, filteredProducts.length)} of {filteredProducts.length}
+        </span>
+        <div className="flex gap-1">
+          <button
+            disabled={page <= 1}
+            onClick={() => setPage((p) => p - 1)}
+            className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span className="px-2 py-1">{page} / {totalPages}</span>
+          <button
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => p + 1)}
+            className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
       </div>
 
       <ProductModal

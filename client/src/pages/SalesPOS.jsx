@@ -25,6 +25,8 @@ function SalesPOS() {
   const [discount, setDiscount] = useState('');
   const { showToast } = useToast();
   const [completedSale, setCompletedSale] = useState(null);
+  const [page, setPage] = useState(1);
+  const PER_PAGE = 12;
 
   const loadProducts = () => {
     apiFetch(PRODUCTS_API).then((res) => res.json()).then(setProducts);
@@ -38,10 +40,18 @@ function SalesPOS() {
     return matchesSearch && matchesCategory;
   });
 
+  
+    const totalPages = Math.max(Math.ceil(filteredProducts.length / PER_PAGE), 1);
+    const paginatedProducts = filteredProducts.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+
   useEffect(() => {
     loadProducts();
     apiFetch(CUSTOMERS_API).then((res) => res.json()).then(setCustomers);
   }, []);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, activeCategory]);
 
   const addToCart = (product) => {
     setCart((prev) => {
@@ -198,7 +208,7 @@ function SalesPOS() {
           ))}
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">
-          {filteredProducts.map((product) => {
+          {paginatedProducts.map((product) => {
             const outOfStock = product.stock_quantity <= 0;
             return (
               <div
@@ -395,6 +405,26 @@ function SalesPOS() {
           <span>₱{total.toFixed(2)}</span>
         </button>
       )}
+    </div>
+
+    <div className="flex justify-between items-center mt-4 text-sm text-on-surface-variant">
+      <span>{page} / {totalPages}</span>
+      <div className="flex gap-1">
+        <button
+          disabled={page <= 1}
+          onClick={() => setPage((p) => p - 1)}
+          className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+        >
+          Previous
+        </button>
+        <button
+          disabled={page >= totalPages}
+          onClick={() => setPage((p) => p + 1)}
+          className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+        >
+          Next
+        </button>
+      </div>
     </div>
     <CustomerModal
       isOpen={customerModalOpen}
