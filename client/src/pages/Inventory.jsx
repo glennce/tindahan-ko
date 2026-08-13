@@ -134,12 +134,12 @@ function Inventory() {
             onChange={(e) => setSearch(e.target.value)}
             className="w-full border border-outline-variant rounded-lg px-4 py-2 mb-3"
           />
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-nowrap overflow-x-auto pb-1">
             {categories.map((cat) => (
               <button
                 key={cat}
                 onClick={() => setActiveCategory(cat)}
-                className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+                className={`px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap shrink-0 ${
                   activeCategory === cat
                     ? 'bg-primary text-on-primary'
                     : 'bg-surface-container-low text-on-surface-variant'
