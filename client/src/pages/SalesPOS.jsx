@@ -33,6 +33,10 @@ function SalesPOS() {
   };
 
   const categories = ['All', ...new Set(products.map((p) => p.category).filter(Boolean))];
+  const QUICK_COUNT = 6;
+  const quickCategories = categories.slice(0, QUICK_COUNT);
+  const moreCategories = categories.slice(QUICK_COUNT);
+  const activeInMore = moreCategories.includes(activeCategory);
 
   const filteredProducts = products.filter((p) => {
     const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
@@ -192,12 +196,12 @@ function SalesPOS() {
           onChange={(e) => setSearch(e.target.value)}
           className="w-full border border-outline-variant rounded-lg px-4 py-2 mb-3"
         />
-        <div className="flex gap-2 flex-wrap mb-4">
-          {categories.map((cat) => (
+        <div className="flex gap-2 flex-wrap items-center mb-4">
+          {quickCategories.map((cat) => (
             <button
               key={cat}
               onClick={() => setActiveCategory(cat)}
-              className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+              className={`px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap ${
                 activeCategory === cat
                   ? 'bg-primary text-on-primary'
                   : 'bg-surface-container-low text-on-surface-variant'
@@ -206,6 +210,22 @@ function SalesPOS() {
               {cat}
             </button>
           ))}
+          {moreCategories.length > 0 && (
+            <select
+              value={activeInMore ? activeCategory : ''}
+              onChange={(e) => setActiveCategory(e.target.value)}
+              className={`px-3 py-1.5 rounded-full text-sm font-medium border-none cursor-pointer ${
+                activeInMore
+                  ? 'bg-primary text-on-primary'
+                  : 'bg-surface-container-low text-on-surface-variant'
+              }`}
+            >
+              <option value="" disabled>{activeInMore ? activeCategory : 'More'}</option>
+              {moreCategories.map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          )}
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">
           {paginatedProducts.map((product) => {
