@@ -366,6 +366,29 @@ function SalesPOS() {
             ))}
           </div>
 
+          {paymentMethod === 'cash' && (
+            <div className="mb-3">
+              <label className="text-sm text-on-surface-variant">Cash Received</label>
+              <input
+                type="number"
+                value={amountTendered}
+                onChange={(e) => setAmountTendered(e.target.value)}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+              {change !== null && (
+                <p className="text-sm text-on-surface-variant mt-1">
+                  Change: ₱{change.toFixed(2)}
+                </p>
+              )}
+            </div>
+          )}
+          
+          {paymentMethod === 'utang' && (
+            <p className="text-xs text-on-surface-variant mb-2">
+              +₱{UTANG_MARKUP_PER_UNIT.toFixed(2)}/item utang markup included
+            </p>
+          )}
+
           {paymentMethod === 'utang' && (
             <p className="text-xs text-on-surface-variant mb-2">
               +₱{UTANG_MARKUP_PER_UNIT.toFixed(2)}/item utang markup included
