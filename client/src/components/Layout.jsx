@@ -4,6 +4,9 @@ import { LayoutGrid, ShoppingCart, Package, CreditCard, Menu } from 'lucide-reac
 
 function Layout() {
 
+  const { user, logout } = useAuth();
+
+  
   const navItems = [
     { to: '/', label: 'Dashboard', end: true, roles: ['owner'] },
     { to: '/pos', label: 'Sales/POS', roles: ['owner', 'cashier'] },
@@ -22,7 +25,6 @@ function Layout() {
     { to: '/more', label: 'More', icon: Menu, roles: ['owner', 'cashier'] },
   ].filter((item) => item.roles.includes(user?.role));
 
-  const { user, logout } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = () => {
