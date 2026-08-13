@@ -6,6 +6,7 @@ const cors = require('cors');
 require('dotenv').config();
 const pool = require('./db');
 const UTANG_MARKUP_PER_UNIT = 2.00; // ₱2 added per unit when payment_method is 'utang'
+const requireRole = require('./requireRole');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -56,12 +57,12 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, name: user.name, email: user.email },
+      { id: user.id, name: user.name, email: user.email, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
+    res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Login failed' });
@@ -79,7 +80,7 @@ app.get('/api/products', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/products', requireAuth, async (req, res) => {
+app.post('/api/products', requireAuth, requireRole('admin'), async (req, res) => {
   const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier } = req.body;
 
   if (!name || selling_price === undefined) {
@@ -115,7 +116,7 @@ app.get('/api/products/:id', requireAuth, async (req, res) => {
 });
 
 // Update a product
-app.put('/api/products/:id', requireAuth, async (req, res) => {
+app.put('/api/products/:id', requireAuth, requireRole('admin'), async (req, res) => {
   const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier } = req.body;
   try {
     const result = await pool.query(
@@ -137,7 +138,7 @@ app.put('/api/products/:id', requireAuth, async (req, res) => {
 });
 
 // Delete a product
-app.delete('/api/products/:id', requireAuth, async (req, res) => {
+app.delete('/api/products/:id', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING *', [req.params.id]);
     if (result.rows.length === 0) {
@@ -324,7 +325,7 @@ app.post('/api/sales', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/sales/:id/void', requireAuth, async (req, res) => {
+app.post('/api/sales/:id/void', requireAuth, requireRole('admin'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -373,7 +374,7 @@ app.post('/api/sales/:id/void', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/dashboard',requireAuth, async (req, res) => {
+app.get('/api/dashboard',requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const salesToday = await pool.query(`
       SELECT COALESCE(SUM(total_amount),0) AS total_sales, COUNT(*) AS transaction_count
@@ -441,7 +442,7 @@ app.get('/api/dashboard',requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/dashboard/trend', requireAuth, async (req, res) => {
+app.get('/api/dashboard/trend', requireAuth, requireRole('admin'), async (req, res) => {
   const { range = 'today' } = req.query;
 
   try {
@@ -582,7 +583,7 @@ app.get('/api/utang/summary', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/transactions', requireAuth, async (req, res) => {
+app.get('/api/transactions', requireAuth, requireRole('admin'), async (req, res) => {
   const { start = '2000-01-01', end = '2100-12-31', type = 'All', status = 'All', page = 1, limit = 10 } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
   const params = [start, end, type, status];
@@ -643,7 +644,7 @@ app.get('/api/transactions', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/transactions/:source/:id', requireAuth, async (req, res) => {
+app.get('/api/transactions/:source/:id', requireAuth, requireRole('admin'), async (req, res) => {
   const { source, id } = req.params;
   try {
     if (source === 'sale') {
@@ -765,7 +766,7 @@ app.get('/api/reports', async (req, res) => {
   }
 });
 
-app.get('/api/reports/sales', requireAuth, async (req, res) => {
+app.get('/api/reports/sales', requireAuth, requireRole('admin'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
@@ -810,7 +811,7 @@ app.get('/api/reports/sales', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/reports/profit', requireAuth, async (req, res) => {
+app.get('/api/reports/profit', requireAuth, requireRole('admin'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
@@ -863,7 +864,7 @@ app.get('/api/reports/profit', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/reports/inventory', requireAuth, async (req, res) => {
+app.get('/api/reports/inventory', requireAuth, requireRole('admin'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
 
@@ -928,7 +929,7 @@ app.get('/api/reports/inventory', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/reports/utang', requireAuth, async (req, res) => {
+app.get('/api/reports/utang', requireAuth, requireRole('admin'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
 
@@ -970,7 +971,7 @@ app.get('/api/reports/utang', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/reports/expenses', requireAuth, async (req, res) => {
+app.get('/api/reports/expenses', requireAuth, requireRole('admin'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
@@ -1008,7 +1009,7 @@ app.get('/api/reports/expenses', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/products/:id/restock', requireAuth, async (req, res) => {
+app.post('/api/products/:id/restock', requireAuth, requireRole('admin'), async (req, res) => {
   const { quantity, cost_price } = req.body;
   const qty = Number(quantity);
 

@@ -2,25 +2,26 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { LayoutGrid, ShoppingCart, Package, CreditCard, Menu } from 'lucide-react';
 
-const navItems = [
-  { to: '/', label: 'Dashboard', end: true },
-  { to: '/pos', label: 'Sales/POS' },
-  { to: '/inventory', label: 'Inventory' },
-  { to: '/customers', label: 'Customers' },
-  { to: '/utang', label: 'Utang' },
-  { to: '/transactions', label: 'Transactions' },
-  { to: '/reports', label: 'Reports' },
-];
-
-const mobileNavItems = [
-  { to: '/', label: 'Home', icon: LayoutGrid, end: true },
-  { to: '/pos', label: 'POS', icon: ShoppingCart },
-  { to: '/inventory', label: 'Inventory', icon: Package },
-  { to: '/utang', label: 'Utang', icon: CreditCard },
-  { to: '/more', label: 'More', icon: Menu },
-];
-
 function Layout() {
+
+  const navItems = [
+    { to: '/', label: 'Dashboard', end: true, roles: ['owner'] },
+    { to: '/pos', label: 'Sales/POS', roles: ['owner', 'cashier'] },
+    { to: '/inventory', label: 'Inventory', roles: ['owner'] },
+    { to: '/customers', label: 'Customers', roles: ['owner', 'cashier'] },
+    { to: '/utang', label: 'Utang', roles: ['owner', 'cashier'] },
+    { to: '/transactions', label: 'Transactions', roles: ['owner'] },
+    { to: '/reports', label: 'Reports', roles: ['owner'] },
+  ].filter((item) => item.roles.includes(user?.role));
+  
+  const mobileNavItems = [
+    { to: '/', label: 'Home', icon: LayoutGrid, end: true, roles: ['owner'] },
+    { to: '/pos', label: 'POS', icon: ShoppingCart, roles: ['owner', 'cashier'] },
+    { to: '/inventory', label: 'Inventory', icon: Package, roles: ['owner'] },
+    { to: '/utang', label: 'Utang', icon: CreditCard, roles: ['owner', 'cashier'] },
+    { to: '/more', label: 'More', icon: Menu, roles: ['owner', 'cashier'] },
+  ].filter((item) => item.roles.includes(user?.role));
+
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 

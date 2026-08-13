@@ -23,12 +23,13 @@ function App() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<Dashboard />} />
+        <Route index element={<OwnerRoute><Dashboard /></OwnerRoute>} />
         <Route path="pos" element={<SalesPOS />} />
-        <Route path="inventory" element={<Inventory />} />
+        <Route path="inventory" element={<OwnerRoute><Inventory /></OwnerRoute>} />
+        <Route path="customers" element={<Customers />} />
         <Route path="utang" element={<Utang />} />
-        <Route path="transactions" element={<Transactions />} />
-        <Route path="reports" element={<Reports />} />
+        <Route path="transactions" element={<OwnerRoute><Transactions /></OwnerRoute>} />
+        <Route path="reports" element={<OwnerRoute><Reports /></OwnerRoute>} />
         <Route path="more" element={<More />} />
         <Route path="customers" element={<Customers />} />
       </Route>

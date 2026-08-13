@@ -19,12 +19,16 @@ function More() {
         <Link to="/customers" className="block px-4 py-3 text-on-surface font-medium">
           Customers
         </Link>
-        <Link to="/transactions" className="block px-4 py-3 text-on-surface font-medium">
-          Transactions
-        </Link>
-        <Link to="/reports" className="block px-4 py-3 text-on-surface font-medium">
-          Reports
-        </Link>
+        {user?.role === 'owner' && (
+          <>
+            <Link to="/transactions" className="block px-4 py-3 text-on-surface font-medium">
+              Transactions
+            </Link>
+            <Link to="/reports" className="block px-4 py-3 text-on-surface font-medium">
+              Reports
+            </Link>
+          </>
+        )}
         <button onClick={handleLogout} className="w-full text-left px-4 py-3 text-error font-medium">
           Logout
         </button>
