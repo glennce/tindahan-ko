@@ -5,7 +5,7 @@ import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 
 const API = '/transactions';
-const TYPE_OPTIONS = ['All', 'Sale (Cash)', 'Sale (GCash)', 'Sale (Utang)', 'Utang Payment'];
+const TYPE_OPTIONS = ['All', 'Sale (Cash)', 'Sale (GCash)', 'Sale (Utang)', 'Sale (Split)', 'Utang Payment'];
 const STATUS_OPTIONS = ['All', 'completed', 'voided'];
 
 function sevenDaysAgo() {
@@ -75,6 +75,7 @@ function Transactions() {
     'Sale (Cash)': 'bg-secondary-container text-secondary',
     'Sale (GCash)': 'bg-primary-container text-on-primary',
     'Sale (Utang)': 'bg-error-container text-error',
+    'Sale (Split)': 'bg-orange-100 text-orange-700',
     'Utang Payment': 'bg-orange-100 text-orange-700',
   };
 
@@ -211,13 +212,14 @@ function Transactions() {
                       <div className="flex justify-between text-error">
                         <span>Discount</span><span>-₱{Number(selected.discount_amount).toFixed(2)}</span>
                       </div>
-                      {selected.payment_method === 'cash' && (
+                      {selected.payment_method === 'split' && (
                         <>
                           <div className="flex justify-between text-on-surface-variant">
-                            <span>Cash Received</span><span>₱{Number(selected.amount_tendered).toFixed(2)}</span>
+                            <span>Cash Paid</span><span>₱{Number(selected.amount_tendered).toFixed(2)}</span>
                           </div>
-                          <div className="flex justify-between text-on-surface-variant">
-                            <span>Change</span><span>₱{Number(selected.change_amount).toFixed(2)}</span>
+                          <div className="flex justify-between text-error">
+                            <span>Charged to Utang</span>
+                            <span>₱{(Number(selected.total_amount) - Number(selected.amount_tendered)).toFixed(2)}</span>
                           </div>
                         </>
                       )}

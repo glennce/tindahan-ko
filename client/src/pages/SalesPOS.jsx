@@ -98,9 +98,10 @@ function SalesPOS() {
   };
 
   const subtotal = cart.reduce((sum, item) => {
-  const price = paymentMethod === 'utang' ? item.unit_price + UTANG_MARKUP_PER_UNIT : item.unit_price;
-  return sum + item.quantity * price;
-}, 0);
+    const markupApplies = paymentMethod === 'utang' || paymentMethod === 'split';
+    const price = markupApplies ? item.unit_price + UTANG_MARKUP_PER_UNIT : item.unit_price;
+    return sum + item.quantity * price;
+  }, 0);
   const discountAmount = Number(discount) || 0;
   const total = Math.max(subtotal - discountAmount, 0);
   const selectedCustomerInfo = customerId
@@ -139,20 +140,30 @@ function SalesPOS() {
       showToast(`Exceeds available credit (₱${selectedCustomerInfo.available.toFixed(2)})`, 'error');
       return;
     }
+    if (paymentMethod === 'split') {
+      if (!customerId) {
+        showToast('Select a customer for split payment.', 'error');
+        return;
+      }
+      if (!amountTendered || Number(amountTendered) <= 0 || Number(amountTendered) >= total) {
+        showToast('Cash amount must be greater than ₱0 and less than the total.', 'error');
+        return;
+      }
+    }
 
     setSubmitting(true);
     try {
       const res = await apiFetch(SALES_API, {
         method: 'POST',
         body: JSON.stringify({
-          customer_id: paymentMethod === 'utang' ? Number(customerId) : null,
+          customer_id: (paymentMethod === 'utang' || paymentMethod === 'split') ? Number(customerId) : null,
           items: cart.map(({ product_id, quantity, unit_price }) => ({
             product_id,
             quantity,
             unit_price,
           })),
           payment_method: paymentMethod,
-          amount_tendered: paymentMethod === 'cash' ? Number(amountTendered) : null,
+          amount_tendered: (paymentMethod === 'cash' || paymentMethod === 'split') ? Number(amountTendered) : null,
           discount_amount: discountAmount,
         }),
       });
@@ -340,7 +351,7 @@ function SalesPOS() {
           </div>
 
           <div className="flex gap-2 mb-3">
-            {['cash', 'gcash', 'utang'].map((method) => (
+            {['cash', 'gcash', 'utang', 'split'].map((method) => (
               <button
                 key={method}
                 onClick={() => setPaymentMethod(method)}
@@ -392,18 +403,30 @@ function SalesPOS() {
             </>
           )}
 
-          {paymentMethod === 'cash' && (
-            <div className="mb-3">
-              <label className="text-sm text-on-surface-variant">Cash Received</label>
-              <input
-                type="number"
-                value={amountTendered}
-                onChange={(e) => setAmountTendered(e.target.value)}
-                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
-              />
-              {change !== null && (
-                <p className="text-sm text-on-surface-variant mt-1">
-                  Change: ₱{change.toFixed(2)}
+          {paymentMethod === 'split' && (
+            <div className="mb-3 space-y-2">
+              <select
+                value={customerId}
+                onChange={(e) => setCustomerId(e.target.value)}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2"
+              >
+                <option value="">Select customer...</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <div>
+                <label className="text-sm text-on-surface-variant">Cash Received (partial)</label>
+                <input
+                  type="number"
+                  value={amountTendered}
+                  onChange={(e) => setAmountTendered(e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+                />
+              </div>
+              {amountTendered && Number(amountTendered) > 0 && Number(amountTendered) < total && (
+                <p className="text-sm text-error">
+                  Remaining on utang: ₱{(total - Number(amountTendered)).toFixed(2)}
                 </p>
               )}
             </div>

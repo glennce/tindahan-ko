@@ -233,7 +233,7 @@ app.post('/api/sales', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const markupPerUnit = payment_method === 'utang' ? UTANG_MARKUP_PER_UNIT : 0;
+    const markupPerUnit = (payment_method === 'utang' || payment_method === 'split') ? UTANG_MARKUP_PER_UNIT : 0;
     const subtotal = items.reduce(
       (sum, item) => sum + item.quantity * (item.unit_price + markupPerUnit),
       0
@@ -270,7 +270,7 @@ app.post('/api/sales', requireAuth, async (req, res) => {
       }
     }
 
-    if (payment_method === 'utang') {
+    if (payment_method === 'utang' || payment_method === 'split') {
       const custResult = await client.query(
         `SELECT name, credit_limit FROM customers WHERE id = $1`,
         [customer_id]
@@ -281,12 +281,23 @@ app.post('/api/sales', requireAuth, async (req, res) => {
       const { name: customerName, credit_limit } = custResult.rows[0];
       const creditLimit = Number(credit_limit);
     
+      // For a split sale, only the remainder after cash goes on credit.
+      // For a pure utang sale, the whole total goes on credit.
+      const utangPortion =
+        payment_method === 'split'
+          ? total_amount - Number(amount_tendered || 0)
+          : total_amount;
+    
+      if (payment_method === 'split' && (!amount_tendered || Number(amount_tendered) <= 0 || Number(amount_tendered) >= total_amount)) {
+        throw new Error('Split sales require a cash amount greater than ₱0 and less than the total.');
+      }
+    
       const lastUtang = await client.query(
         `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
         [customer_id]
       );
       const previousBalance = lastUtang.rows.length ? Number(lastUtang.rows[0].balance_after) : 0;
-      const newBalance = previousBalance + total_amount;
+      const newBalance = previousBalance + utangPortion;
     
       if (newBalance > creditLimit) {
         const available = Math.max(creditLimit - previousBalance, 0);
@@ -298,7 +309,7 @@ app.post('/api/sales', requireAuth, async (req, res) => {
       await client.query(
         `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
          VALUES ($1, $2, 'charge', $3, $4, $5)`,
-        [customer_id, sale.id, total_amount, newBalance, 'Sale purchase']
+        [customer_id, sale.id, utangPortion, newBalance, payment_method === 'split' ? 'Split sale (partial credit)' : 'Sale purchase']
       );
     }
 
@@ -331,18 +342,23 @@ app.post('/api/sales/:id/void', requireAuth, async (req, res) => {
       );
     }
 
-    if (sale.payment_method === 'utang' && sale.customer_id) {
+    if ((sale.payment_method === 'utang' || sale.payment_method === 'split') && sale.customer_id) {
+      const utangPortion =
+        sale.payment_method === 'split'
+          ? Number(sale.total_amount) - Number(sale.amount_tendered)
+          : Number(sale.total_amount);
+
       const lastUtang = await client.query(
         `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
         [sale.customer_id]
       );
       const previousBalance = lastUtang.rows.length ? Number(lastUtang.rows[0].balance_after) : 0;
-      const newBalance = previousBalance - Number(sale.total_amount);
-
+      const newBalance = previousBalance - utangPortion;
+    
       await client.query(
         `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
          VALUES ($1, $2, 'payment', $3, $4, 'Sale voided')`,
-        [sale.customer_id, sale.id, sale.total_amount, newBalance]
+        [sale.customer_id, sale.id, utangPortion, newBalance]
       );
     }
 
@@ -578,6 +594,7 @@ app.get('/api/transactions', requireAuth, async (req, res) => {
              s.total_amount AS amount,
              CASE WHEN s.payment_method = 'utang' THEN 'Sale (Utang)'
                   WHEN s.payment_method = 'gcash' THEN 'Sale (GCash)'
+                  WHEN s.payment_method = 'split' THEN 'Sale (Split)'
                   ELSE 'Sale (Cash)' END AS type_label,
              s.status
       FROM sales s
