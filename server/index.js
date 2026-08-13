@@ -80,7 +80,7 @@ app.get('/api/products', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/products', requireAuth, requireRole('admin'), async (req, res) => {
+app.post('/api/products', requireAuth, requireRole('owner'), async (req, res) => {
   const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier } = req.body;
 
   if (!name || selling_price === undefined) {
@@ -116,7 +116,7 @@ app.get('/api/products/:id', requireAuth, async (req, res) => {
 });
 
 // Update a product
-app.put('/api/products/:id', requireAuth, requireRole('admin'), async (req, res) => {
+app.put('/api/products/:id', requireAuth, requireRole('owner'), async (req, res) => {
   const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier } = req.body;
   try {
     const result = await pool.query(
@@ -138,7 +138,7 @@ app.put('/api/products/:id', requireAuth, requireRole('admin'), async (req, res)
 });
 
 // Delete a product
-app.delete('/api/products/:id', requireAuth, requireRole('admin'), async (req, res) => {
+app.delete('/api/products/:id', requireAuth, requireRole('owner'), async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING *', [req.params.id]);
     if (result.rows.length === 0) {
@@ -325,7 +325,7 @@ app.post('/api/sales', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/sales/:id/void', requireAuth, requireRole('admin'), async (req, res) => {
+app.post('/api/sales/:id/void', requireAuth, requireRole('owner'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -374,7 +374,7 @@ app.post('/api/sales/:id/void', requireAuth, requireRole('admin'), async (req, r
   }
 });
 
-app.get('/api/dashboard',requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => {
   try {
     const salesToday = await pool.query(`
       SELECT COALESCE(SUM(total_amount),0) AS total_sales, COUNT(*) AS transaction_count
@@ -442,7 +442,7 @@ app.get('/api/dashboard',requireAuth, requireRole('admin'), async (req, res) => 
   }
 });
 
-app.get('/api/dashboard/trend', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/dashboard/trend', requireAuth, requireRole('owner'), async (req, res) => {
   const { range = 'today' } = req.query;
 
   try {
@@ -583,7 +583,7 @@ app.get('/api/utang/summary', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/transactions', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/transactions', requireAuth, requireRole('owner'), async (req, res) => {
   const { start = '2000-01-01', end = '2100-12-31', type = 'All', status = 'All', page = 1, limit = 10 } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
   const params = [start, end, type, status];
@@ -644,7 +644,7 @@ app.get('/api/transactions', requireAuth, requireRole('admin'), async (req, res)
   }
 });
 
-app.get('/api/transactions/:source/:id', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/transactions/:source/:id', requireAuth, requireRole('owner'), async (req, res) => {
   const { source, id } = req.params;
   try {
     if (source === 'sale') {
@@ -766,7 +766,7 @@ app.get('/api/reports', async (req, res) => {
   }
 });
 
-app.get('/api/reports/sales', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/reports/sales', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
@@ -811,7 +811,7 @@ app.get('/api/reports/sales', requireAuth, requireRole('admin'), async (req, res
   }
 });
 
-app.get('/api/reports/profit', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
@@ -864,7 +864,7 @@ app.get('/api/reports/profit', requireAuth, requireRole('admin'), async (req, re
   }
 });
 
-app.get('/api/reports/inventory', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
 
@@ -929,7 +929,7 @@ app.get('/api/reports/inventory', requireAuth, requireRole('admin'), async (req,
   }
 });
 
-app.get('/api/reports/utang', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
 
@@ -971,7 +971,7 @@ app.get('/api/reports/utang', requireAuth, requireRole('admin'), async (req, res
   }
 });
 
-app.get('/api/reports/expenses', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
@@ -1009,7 +1009,7 @@ app.get('/api/reports/expenses', requireAuth, requireRole('admin'), async (req, 
   }
 });
 
-app.post('/api/products/:id/restock', requireAuth, requireRole('admin'), async (req, res) => {
+app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (req, res) => {
   const { quantity, cost_price } = req.body;
   const qty = Number(quantity);
 

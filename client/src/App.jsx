@@ -10,6 +10,7 @@ import Transactions from './pages/Transactions';
 import Reports from './pages/Reports';
 import More from './pages/More';
 import Customers from './pages/Customers';
+import OwnerRoute from './components/OwnerRoute';
 
 function App() {
   return (
