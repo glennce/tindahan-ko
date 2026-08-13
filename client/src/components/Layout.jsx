@@ -30,9 +30,9 @@ function Layout() {
   };
 
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex h-screen overflow-hidden bg-background">
       {/* Desktop sidebar — completely hidden below the lg breakpoint */}
-      <aside className="hidden lg:flex w-60 bg-surface border-r border-outline-variant flex-col p-4">
+      <aside className="hidden lg:flex w-60 shrink-0 bg-surface border-r border-outline-variant flex-col p-4 overflow-y-auto">
         <div className="mb-8">
           <h1 className="text-primary text-xl font-bold">Tindahan Ko</h1>
           <p className="text-on-surface-variant text-sm">Admin Terminal</p>
@@ -66,14 +66,14 @@ function Layout() {
         </div>
       </aside>
 
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile top bar — shown only below lg */}
-        <header className="lg:hidden flex items-center bg-surface border-b border-outline-variant px-4 py-3">
+        <header className="lg:hidden shrink-0 flex items-center bg-surface border-b border-outline-variant px-4 py-3">
           <h1 className="text-primary text-lg font-bold">Tindahan Ko</h1>
         </header>
 
         {/* pb-20 on mobile reserves space so content doesn't hide behind the fixed bottom nav */}
-        <main className="flex-1 p-4 lg:p-8 pb-24 lg:pb-8">
+        <main className="flex-1 p-4 lg:p-8 pb-24 lg:pb-8 overflow-y-auto">
           <Outlet />
         </main>
       </div>
