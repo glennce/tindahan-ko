@@ -388,13 +388,7 @@ function SalesPOS() {
               +₱{UTANG_MARKUP_PER_UNIT.toFixed(2)}/item utang markup included
             </p>
           )}
-
-          {paymentMethod === 'utang' && (
-            <p className="text-xs text-on-surface-variant mb-2">
-              +₱{UTANG_MARKUP_PER_UNIT.toFixed(2)}/item utang markup included
-            </p>
-          )}
-
+          
           {paymentMethod === 'utang' && (
             <>
               <div className="flex gap-2 mb-2">
