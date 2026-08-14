@@ -128,8 +128,9 @@ function Inventory() {
   if (error) return <p className="text-error">Error: {error}</p>;
 
   function getStatus(product) {
+    const effectiveStock = product.stock_quantity * (product.units_per_pack || 1);
     if (product.stock_quantity <= 0) return { label: 'Out of Stock', className: 'bg-error-container text-error' };
-    if (product.stock_quantity <= product.low_stock_threshold) return { label: 'Low Stock', className: 'bg-orange-100 text-orange-700' };
+    if (effectiveStock <= product.low_stock_threshold) return { label: 'Low Stock', className: 'bg-orange-100 text-orange-700' };
     return { label: 'Available', className: 'bg-secondary-container text-secondary' };
   }
 

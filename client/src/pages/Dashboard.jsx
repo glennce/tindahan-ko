@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Wallet, TrendingUp, Receipt, CreditCard, PackageSearch, ReceiptText } from 'lucide-react';
+import { formatStock } from '../utils';
 
 const API = '/dashboard';
 
@@ -203,7 +204,7 @@ function Dashboard() {
             <div key={p.id} className="flex justify-between items-center py-2 border-t border-outline-variant text-sm">
               <div>
                 <p className="text-on-surface">{p.name}</p>
-                <span className="text-error font-medium">{p.stock_quantity} pcs</span>
+                <span className="text-error font-medium">{formatStock(p)}</span>
               </div>
               <button
                 onClick={() => navigate('/inventory')}

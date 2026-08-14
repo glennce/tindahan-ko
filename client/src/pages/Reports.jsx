@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import { TrendingUp, Activity, Package, CreditCard, Receipt, Download } from 'lucide-react';
+import { formatStock } from '../utils';
 
 const TABS = [
   { key: 'sales', label: 'Sales', icon: TrendingUp },
@@ -241,9 +242,9 @@ function ProfitReport({ data }) {
 function InventoryReport({ data }) {
   const handleExportLowStock = () => {
     const rows = [
-      ['Product', 'Category', 'Current Stock', 'Threshold', 'Status'],
-      ...data.low_stock_list.map((p) => [p.name, p.category || '', p.stock_quantity, p.low_stock_threshold, 'Low Stock']),
-      ...data.out_of_stock_list.map((p) => [p.name, p.category || '', p.stock_quantity, p.low_stock_threshold, 'Out of Stock']),
+      ['Product', 'Category', 'Current Stock', 'Status'],
+      ...data.low_stock_list.map((p) => [p.name, p.category || '', formatStock(p), 'Low Stock']),
+      ...data.out_of_stock_list.map((p) => [p.name, p.category || '', formatStock(p), 'Out of Stock']),
     ];
     downloadCsv(`low-and-out-of-stock-${new Date().toISOString().slice(0, 10)}.csv`, rows);
   };
@@ -282,7 +283,7 @@ function InventoryReport({ data }) {
             {data.low_stock_list.map((p) => (
               <div key={p.id} className="flex justify-between text-sm py-1.5 border-t border-outline-variant">
                 <span className="text-on-surface">{p.name}</span>
-                <span className="text-orange-600 font-medium">{p.stock_quantity} left (threshold: {p.low_stock_threshold})</span>
+                <span className="text-orange-600 font-medium">{formatStock(p)}</span>
               </div>
             ))}
           </div>
