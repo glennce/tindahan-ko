@@ -270,27 +270,27 @@ function SalesPOS() {
             );
           })}
         </div>
-      </div>
 
-      <div className="flex justify-between items-center mt-4 text-sm text-on-surface-variant">
-      <span>{page} / {totalPages}</span>
-      <div className="flex gap-1">
-        <button
-          disabled={page <= 1}
-          onClick={() => setPage((p) => p - 1)}
-          className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
-        >
-          Previous
-        </button>
-        <button
-          disabled={page >= totalPages}
-          onClick={() => setPage((p) => p + 1)}
-          className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
-        >
-          Next
-        </button>
+        <div className="flex justify-between items-center mt-4 text-sm text-on-surface-variant">
+          <span>{page} / {totalPages}</span>
+          <div className="flex gap-1">
+            <button
+              disabled={page <= 1}
+              onClick={() => setPage((p) => p - 1)}
+              className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <button
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => p + 1)}
+              className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </div>
-    </div>
 
       {/* Cart panel: always visible on desktop (lg+), an overlay on mobile */}
       <div
