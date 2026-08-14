@@ -201,7 +201,8 @@ function Shift() {
         <div className="p-4 border-b border-outline-variant">
           <h2 className="font-semibold text-on-surface">Shift History</h2>
         </div>
-        <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm min-w-[600px]">
           <thead className="bg-surface-container-low text-on-surface-variant">
               <tr>
                 <th className="px-4 py-3">Date</th>
@@ -238,6 +239,7 @@ function Shift() {
               )}
             </tbody>
         </table>
+        </div>
       </div>
 
         {selectedShift && (

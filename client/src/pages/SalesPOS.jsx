@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import CustomerModal from '../components/CustomerModal';
 import { useToast } from '../context/ToastContext';
 import SaleSuccessModal from '../components/SaleSuccessModal';
+import { formatStock } from '../utils';
 
 const PRODUCTS_API = '/products';
 const CUSTOMERS_API = '/customers';
@@ -252,7 +253,7 @@ function SalesPOS() {
                 <p className="font-medium text-on-surface text-sm lg:text-base">{product.name}</p>
                 <p className="text-primary font-semibold">₱{product.selling_price}</p>
                 <p className="text-on-surface-variant text-sm mb-2">
-                  {product.stock_quantity} in stock
+                  {formatStock(product)}
                 </p>
                 <button
                   disabled={outOfStock}

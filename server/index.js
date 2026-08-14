@@ -81,7 +81,7 @@ app.get('/api/products', requireAuth, async (req, res) => {
 });
 
 app.post('/api/products', requireAuth, requireRole('owner'), async (req, res) => {
-  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier } = req.body;
+  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
 
   if (!name || selling_price === undefined) {
     return res.status(400).json({ error: 'Name and selling price are required' });
@@ -89,10 +89,10 @@ app.post('/api/products', requireAuth, requireRole('owner'), async (req, res) =>
 
   try {
     const result = await pool.query(
-      `INSERT INTO products (name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO products (name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [name, sku, category, cost_price || 0, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier]
+      [name, sku, category, cost_price || 0, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier, units_per_pack || null, unit_label || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -117,15 +117,15 @@ app.get('/api/products/:id', requireAuth, async (req, res) => {
 
 // Update a product
 app.put('/api/products/:id', requireAuth, requireRole('owner'), async (req, res) => {
-  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier } = req.body;
+  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
   try {
     const result = await pool.query(
       `UPDATE products
        SET name = $1, sku = $2, category = $3, cost_price = $4, selling_price = $5,
-           stock_quantity = $6, low_stock_threshold = $7, supplier = $8
-       WHERE id = $9
+           stock_quantity = $6, low_stock_threshold = $7, supplier = $8, units_per_pack = $9, unit_label = $10
+       WHERE id = $11
        RETURNING *`,
-      [name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, req.params.id]
+      [name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, req.params.id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });

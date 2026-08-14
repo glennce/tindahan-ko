@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 const emptyForm = {
   name: '', sku: '', category: '', cost_price: '', selling_price: '',
   stock_quantity: '', low_stock_threshold: '10', supplier: '',
+  units_per_pack: '', unit_label: ''
 };
 
 function ProductModal({ isOpen, onClose, onSave, initialData }) {
@@ -99,6 +100,27 @@ function ProductModal({ isOpen, onClose, onSave, initialData }) {
               className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
             />
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">Units per Pack</label>
+              <input
+                type="number" name="units_per_pack" value={form.units_per_pack || ''} onChange={handleChange}
+                placeholder="e.g. 20"
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">Unit Name</label>
+              <input
+                name="unit_label" value={form.unit_label || ''} onChange={handleChange}
+                placeholder="e.g. stick"
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-on-surface-variant -mt-2">
+            Optional — only fill this in for products sold by pack but tracked by individual pieces (e.g. cigarettes).
+          </p>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button" onClick={onClose}

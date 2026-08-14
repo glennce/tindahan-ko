@@ -4,6 +4,7 @@ import ProductModal from '../components/ProductModal';
 import StockInModal from '../components/StockInModal';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
+import { formatStock } from '../utils';
 
 const API = '/products';
 
@@ -212,6 +213,7 @@ function Inventory() {
               </div>
               <div className="flex justify-between items-center mt-3">
                 <span className="text-primary font-semibold">₱{product.selling_price}</span>
+                <p className="text-on-surface-variant text-xs mt-1">{formatStock(product)}</p>
                 <div className="space-x-3">
                   <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium">
                     Edit
@@ -250,6 +252,7 @@ function Inventory() {
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.className}`}>
                       {status.label}
                     </span>
+                    <p className="text-on-surface-variant text-xs mt-1">{formatStock(product)}</p>
                   </td>
                   <td className="px-4 py-3 space-x-3">
                     <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium">

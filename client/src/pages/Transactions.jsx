@@ -116,7 +116,8 @@ function Transactions() {
       </div>
 
         <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
-          <table className="w-full text-left text-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm min-w-[700px]">
             <thead className="bg-surface-container-low text-on-surface-variant">
               <tr>
                 <th className="px-4 py-3">ID</th>
@@ -168,9 +169,9 @@ function Transactions() {
               )}
             </tbody>
           </table>
-
-          <div className="flex justify-between items-center px-4 py-3 border-t border-outline-variant text-sm text-on-surface-variant">
-            <span>Showing {data.transactions.length === 0 ? 0 : (page - 1) * limit + 1} to {(page - 1) * limit + data.transactions.length} of {data.total} entries</span>
+          </div>
+                    
+          <div className="flex justify-between items-center px-4 py-3 border-t border-outline-variant text-sm text-on-surface-variant"><span>Showing {data.transactions.length === 0 ? 0 : (page - 1) * limit + 1} to {(page - 1) * limit + data.transactions.length} of {data.total} entries</span>
             <div className="flex gap-1">
               <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}
                 className="px-2 py-1 border border-outline-variant rounded disabled:opacity-40">‹</button>
