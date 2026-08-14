@@ -1049,10 +1049,22 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
      WHERE status = 'completed' AND created_at BETWEEN $1 AND $2`,
     [startTime, endTime]
   );
+  const gcashSales = await client.query(
+    `SELECT COALESCE(SUM(total_amount), 0) AS total
+     FROM sales
+     WHERE status = 'completed' AND payment_method = 'gcash' AND created_at BETWEEN $1 AND $2`,
+    [startTime, endTime]
+  );
   const cashUtangPayments = await client.query(
     `SELECT COALESCE(SUM(amount), 0) AS total
      FROM utang_transactions
      WHERE type = 'payment' AND payment_method = 'cash' AND created_at BETWEEN $1 AND $2`,
+    [startTime, endTime]
+  );
+  const utangCharged = await client.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM utang_transactions
+     WHERE type = 'charge' AND created_at BETWEEN $1 AND $2`,
     [startTime, endTime]
   );
   const expenses = await client.query(
@@ -1063,7 +1075,9 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
 
   return {
     cash_sales: Number(cashSales.rows[0].total),
+    gcash_sales: Number(gcashSales.rows[0].total),
     cash_utang_payments: Number(cashUtangPayments.rows[0].total),
+    utang_charged: Number(utangCharged.rows[0].total),
     expenses: Number(expenses.rows[0].total),
     expected_cash:
       Number(openingCash) +
@@ -1127,15 +1141,16 @@ app.post('/api/shift/close', requireAuth, async (req, res) => {
     }
     const shift = openShift.rows[0];
     const now = new Date();
-    const { expected_cash } = await computeExpectedCash(shift.opening_cash, shift.opened_at, now);
-    const difference = Number(closing_cash) - expected_cash;
+    const running = await computeExpectedCash(shift.opening_cash, shift.opened_at, now);
+    const difference = Number(closing_cash) - running.expected_cash;
 
     const result = await pool.query(
       `UPDATE cash_shifts
        SET closed_by = $1, closing_cash = $2, expected_cash = $3, difference = $4,
-           status = 'closed', closed_at = $5, notes = $6
-       WHERE id = $7 RETURNING *`,
-      [req.user.id, closing_cash, expected_cash, difference, now, notes || null, shift.id]
+           gcash_sales = $5, utang_charged = $6, status = 'closed', closed_at = $7, notes = $8
+       WHERE id = $9 RETURNING *`,
+      [req.user.id, closing_cash, running.expected_cash, difference,
+       running.gcash_sales, running.utang_charged, now, notes || null, shift.id]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -1159,6 +1174,24 @@ app.get('/api/shift/history', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load shift history' });
+  }
+});
+
+app.get('/api/shift/:id', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT cs.*, u1.name AS opened_by_name, u2.name AS closed_by_name
+       FROM cash_shifts cs
+       JOIN users u1 ON u1.id = cs.opened_by
+       LEFT JOIN users u2 ON u2.id = cs.closed_by
+       WHERE cs.id = $1`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Shift not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load shift detail' });
   }
 });
 
