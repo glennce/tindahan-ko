@@ -1036,6 +1036,132 @@ app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (
   }
 });
 
+async function computeExpectedCash(openingCash, startTime, endTime, client = pool) {
+  const cashSales = await client.query(
+    `SELECT COALESCE(SUM(
+       CASE
+         WHEN payment_method = 'cash' THEN total_amount
+         WHEN payment_method = 'split' THEN amount_tendered
+         ELSE 0
+       END
+     ), 0) AS total
+     FROM sales
+     WHERE status = 'completed' AND created_at BETWEEN $1 AND $2`,
+    [startTime, endTime]
+  );
+  const cashUtangPayments = await client.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM utang_transactions
+     WHERE type = 'payment' AND payment_method = 'cash' AND created_at BETWEEN $1 AND $2`,
+    [startTime, endTime]
+  );
+  const expenses = await client.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM expenses WHERE created_at BETWEEN $1 AND $2`,
+    [startTime, endTime]
+  );
+
+  return {
+    cash_sales: Number(cashSales.rows[0].total),
+    cash_utang_payments: Number(cashUtangPayments.rows[0].total),
+    expenses: Number(expenses.rows[0].total),
+    expected_cash:
+      Number(openingCash) +
+      Number(cashSales.rows[0].total) +
+      Number(cashUtangPayments.rows[0].total) -
+      Number(expenses.rows[0].total),
+  };
+}
+
+app.get('/api/shift/current', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT cs.*, u.name AS opened_by_name
+       FROM cash_shifts cs
+       JOIN users u ON u.id = cs.opened_by
+       WHERE cs.status = 'open'
+       ORDER BY cs.opened_at DESC LIMIT 1`
+    );
+    if (result.rows.length === 0) {
+      return res.json({ shift: null });
+    }
+    const shift = result.rows[0];
+    const running = await computeExpectedCash(shift.opening_cash, shift.opened_at, new Date());
+    res.json({ shift, running });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load current shift' });
+  }
+});
+
+app.post('/api/shift/open', requireAuth, async (req, res) => {
+  const { opening_cash } = req.body;
+  if (opening_cash === undefined || Number(opening_cash) < 0) {
+    return res.status(400).json({ error: 'Enter a valid opening cash amount' });
+  }
+  try {
+    const existing = await pool.query(`SELECT id FROM cash_shifts WHERE status = 'open'`);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'A shift is already open' });
+    }
+    const result = await pool.query(
+      `INSERT INTO cash_shifts (opened_by, opening_cash) VALUES ($1, $2) RETURNING *`,
+      [req.user.id, opening_cash]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to open shift' });
+  }
+});
+
+app.post('/api/shift/close', requireAuth, async (req, res) => {
+  const { closing_cash, notes } = req.body;
+  if (closing_cash === undefined || Number(closing_cash) < 0) {
+    return res.status(400).json({ error: 'Enter a valid closing cash amount' });
+  }
+  try {
+    const openShift = await pool.query(`SELECT * FROM cash_shifts WHERE status = 'open' LIMIT 1`);
+    if (openShift.rows.length === 0) {
+      return res.status(400).json({ error: 'No shift is currently open' });
+    }
+    const shift = openShift.rows[0];
+    const now = new Date();
+    const { expected_cash } = await computeExpectedCash(shift.opening_cash, shift.opened_at, now);
+    const difference = Number(closing_cash) - expected_cash;
+
+    const result = await pool.query(
+      `UPDATE cash_shifts
+       SET closed_by = $1, closing_cash = $2, expected_cash = $3, difference = $4,
+           status = 'closed', closed_at = $5, notes = $6
+       WHERE id = $7 RETURNING *`,
+      [req.user.id, closing_cash, expected_cash, difference, now, notes || null, shift.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to close shift' });
+  }
+});
+
+app.get('/api/shift/history', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT cs.*, u1.name AS opened_by_name, u2.name AS closed_by_name
+       FROM cash_shifts cs
+       JOIN users u1 ON u1.id = cs.opened_by
+       LEFT JOIN users u2 ON u2.id = cs.closed_by
+       WHERE cs.status = 'closed'
+       ORDER BY cs.closed_at DESC
+       LIMIT 30`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load shift history' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

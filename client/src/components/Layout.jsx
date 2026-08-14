@@ -15,6 +15,7 @@ function Layout() {
     { to: '/utang', label: 'Utang', roles: ['owner', 'cashier'] },
     { to: '/transactions', label: 'Transactions', roles: ['owner'] },
     { to: '/reports', label: 'Reports', roles: ['owner'] },
+    { to: '/shift', label: 'Cash Drawer', roles: ['owner', 'cashier'] },
   ].filter((item) => item.roles.includes(user?.role));
   
   const mobileNavItems = [
