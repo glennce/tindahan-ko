@@ -378,7 +378,7 @@ app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => 
   try {
     const salesToday = await pool.query(`
       SELECT COALESCE(SUM(total_amount),0) AS total_sales, COUNT(*) AS transaction_count
-      FROM sales WHERE created_at::date = CURRENT_DATE
+      FROM sales WHERE created_at::date = CURRENT_DATE AND status = 'completed'
     `);
 
     const profitToday = await pool.query(`
@@ -387,7 +387,7 @@ app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => 
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
       JOIN products p ON p.id = si.product_id
-      WHERE s.created_at::date = CURRENT_DATE
+      WHERE s.created_at::date = CURRENT_DATE AND s.status = 'completed'
     `);
 
     const lowStock = await pool.query(`
@@ -406,7 +406,7 @@ app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => 
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
       JOIN products p ON p.id = si.product_id
-      WHERE s.created_at::date = CURRENT_DATE
+      WHERE s.created_at::date = CURRENT_DATE AND s.status = 'completed'
       GROUP BY p.id, p.name
       ORDER BY qty_sold DESC
       LIMIT 4
