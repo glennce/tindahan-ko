@@ -20,8 +20,11 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!productId || !quantity || Number(quantity) <= 0) return;
+    const actualPieces = selectedProduct?.units_per_pack
+      ? Number(quantity) * selectedProduct.units_per_pack
+      : Number(quantity);
     onSave(productId, {
-      quantity: Number(quantity),
+      quantity: actualPieces,
       cost_price: newCostPrice ? Number(newCostPrice) : null,
     });
   };
@@ -49,19 +52,28 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
           </div>
 
           <div>
-            <label className="text-sm font-medium text-on-surface-variant">Quantity Received *</label>
+            <label className="text-sm font-medium text-on-surface-variant">
+              {selectedProduct?.units_per_pack ? `Packs Received *` : `Quantity Received *`}
+            </label>
             <input
               type="number"
               min="1"
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
               required
-              placeholder="e.g. 24"
+              placeholder={selectedProduct?.units_per_pack ? 'e.g. 5' : 'e.g. 24'}
               className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
             />
             {selectedProduct && quantity && (
               <p className="text-xs text-on-surface-variant mt-1">
-                New stock level will be: {selectedProduct.stock_quantity + Number(quantity)} pcs
+                {selectedProduct.units_per_pack ? (
+                  <>
+                    Adding {Number(quantity) * selectedProduct.units_per_pack} {selectedProduct.unit_label}s
+                    — new stock level: {selectedProduct.stock_quantity + Number(quantity) * selectedProduct.units_per_pack} {selectedProduct.unit_label}s
+                  </>
+                ) : (
+                  <>New stock level will be: {selectedProduct.stock_quantity + Number(quantity)} pcs</>
+                )}
               </p>
             )}
           </div>

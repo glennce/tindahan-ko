@@ -391,16 +391,14 @@ app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => 
     `);
 
     const lowStock = await pool.query(`
-      SELECT id, name, stock_quantity, units_per_pack, unit_label
-      FROM products
-      WHERE (stock_quantity * COALESCE(units_per_pack, 1)) <= low_stock_threshold
-      ORDER BY (stock_quantity * COALESCE(units_per_pack, 1)) ASC
+      SELECT id, name, stock_quantity, units_per_pack, unit_label FROM products
+      WHERE stock_quantity <= low_stock_threshold
+      ORDER BY stock_quantity ASC
       LIMIT 5
     `);
 
     const lowStockCount = await pool.query(`
-      SELECT COUNT(*) AS count FROM products
-      WHERE (stock_quantity * COALESCE(units_per_pack, 1)) <= low_stock_threshold
+      SELECT COUNT(*) AS count FROM products WHERE stock_quantity <= low_stock_threshold
     `);
 
     const topSelling = await pool.query(`
@@ -877,8 +875,8 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
     const statusCounts = await pool.query(`
       SELECT
         COUNT(*) FILTER (WHERE stock_quantity <= 0) AS out_of_stock,
-        COUNT(*) FILTER (WHERE stock_quantity > 0 AND (stock_quantity * COALESCE(units_per_pack, 1)) <= low_stock_threshold) AS low_stock,
-        COUNT(*) FILTER (WHERE stock_quantity > 0 AND (stock_quantity * COALESCE(units_per_pack, 1)) > low_stock_threshold) AS available
+        COUNT(*) FILTER (WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold) AS low_stock,
+        COUNT(*) FILTER (WHERE stock_quantity > low_stock_threshold) AS available
       FROM products
     `);
     const topMovers = await pool.query(
@@ -905,8 +903,8 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
     const lowStockList = await pool.query(`
       SELECT id, name, category, stock_quantity, low_stock_threshold, units_per_pack, unit_label
       FROM products
-      WHERE stock_quantity > 0 AND (stock_quantity * COALESCE(units_per_pack, 1)) <= low_stock_threshold
-      ORDER BY (stock_quantity * COALESCE(units_per_pack, 1)) ASC
+      WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold
+      ORDER BY stock_quantity ASC
     `);
     const outOfStockList = await pool.query(`
       SELECT id, name, category, stock_quantity, low_stock_threshold, units_per_pack, unit_label
