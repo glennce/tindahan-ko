@@ -19,6 +19,10 @@ function Shift() {
   const loadHistory = () => {
     apiFetch('/shift/history').then((res) => res.json()).then(setHistory);
   };
+  
+  const viewShiftDetail = (id) => {
+    apiFetch(`/shift/${id}`).then((res) => res.json()).then(setSelectedShift);
+  };
 
   useEffect(() => {
     loadCurrent();
