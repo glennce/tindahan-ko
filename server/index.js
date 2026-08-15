@@ -89,10 +89,10 @@ app.post('/api/products', requireAuth, requireRole('owner'), async (req, res) =>
 
   try {
     const result = await pool.query(
-      `INSERT INTO products (name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label)
+      `INSERT INTO products (name, cleanSku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [name, sku, category, cost_price || 0, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier, units_per_pack || null, unit_label || null]
+      [name, cleanSku, category, cost_price || 0, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier, units_per_pack || null, unit_label || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -118,14 +118,15 @@ app.get('/api/products/:id', requireAuth, async (req, res) => {
 // Update a product
 app.put('/api/products/:id', requireAuth, requireRole('owner'), async (req, res) => {
   const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
+  const cleanSku = sku && sku.trim() !== '' ? sku.trim() : null;
   try {
-    const result = await pool.query(
+      const result = await pool.query(
       `UPDATE products
-       SET name = $1, sku = $2, category = $3, cost_price = $4, selling_price = $5,
+       SET name = $1, cleanSku = $2, category = $3, cost_price = $4, selling_price = $5,
            stock_quantity = $6, low_stock_threshold = $7, supplier = $8, units_per_pack = $9, unit_label = $10
        WHERE id = $11
        RETURNING *`,
-      [name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, req.params.id]
+      [name, cleanSku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, req.params.id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
@@ -1087,70 +1088,125 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
   };
 }
 
+function manilaToday() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+}
+
+function manilaDayBounds(dateStr) {
+  const start = new Date(`${dateStr}T00:00:00+08:00`);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+  return { start, end };
+}
+
+async function ensureTodayShift() {
+  const today = manilaToday();
+  let result = await pool.query(`SELECT * FROM cash_shifts WHERE shift_date = $1`, [today]);
+  if (result.rows.length === 0) {
+    result = await pool.query(
+      `INSERT INTO cash_shifts (shift_date, status) VALUES ($1, 'active') RETURNING *`,
+      [today]
+    );
+  }
+  return result.rows[0];
+}
+
+async function freezeStaleShifts() {
+  const today = manilaToday();
+  const stale = await pool.query(
+    `SELECT * FROM cash_shifts WHERE status = 'active' AND shift_date < $1`,
+    [today]
+  );
+  for (const shift of stale.rows) {
+    const dateStr = shift.shift_date.toISOString().slice(0, 10);
+    const { start, end } = manilaDayBounds(dateStr);
+    const running = await computeExpectedCash(shift.opening_cash || 0, start, end);
+    await pool.query(
+      `UPDATE cash_shifts SET status = 'pending_count', expected_cash = $1, gcash_sales = $2, utang_charged = $3 WHERE id = $4`,
+      [running.expected_cash, running.gcash_sales, running.utang_charged, shift.id]
+    );
+  }
+}
+
 app.get('/api/shift/current', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT cs.*, u.name AS opened_by_name
-       FROM cash_shifts cs
-       JOIN users u ON u.id = cs.opened_by
-       WHERE cs.status = 'open'
-       ORDER BY cs.opened_at DESC LIMIT 1`
+    await ensureTodayShift();
+    await freezeStaleShifts();
+
+    const today = manilaToday();
+    const todayResult = await pool.query(
+      `SELECT cs.*, u.name AS opened_by_name FROM cash_shifts cs
+       LEFT JOIN users u ON u.id = cs.opened_by WHERE shift_date = $1`,
+      [today]
     );
-    if (result.rows.length === 0) {
-      return res.json({ shift: null });
-    }
-    const shift = result.rows[0];
-    const running = await computeExpectedCash(shift.opening_cash, shift.opened_at, new Date());
-    res.json({ shift, running });
+    const shift = todayResult.rows[0];
+    const { start } = manilaDayBounds(today);
+    const running = await computeExpectedCash(shift.opening_cash || 0, start, new Date());
+
+    const pending = await pool.query(
+      `SELECT cs.*, u.name AS opened_by_name FROM cash_shifts cs
+       LEFT JOIN users u ON u.id = cs.opened_by
+       WHERE status = 'pending_count' ORDER BY shift_date ASC`
+    );
+
+    res.json({ shift, running, pending: pending.rows });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load current shift' });
   }
 });
 
-app.post('/api/shift/open', requireAuth, async (req, res) => {
+app.post('/api/shift/opening-cash', requireAuth, async (req, res) => {
   const { opening_cash } = req.body;
   if (opening_cash === undefined || Number(opening_cash) < 0) {
     return res.status(400).json({ error: 'Enter a valid opening cash amount' });
   }
   try {
-    const existing = await pool.query(`SELECT id FROM cash_shifts WHERE status = 'open'`);
-    if (existing.rows.length > 0) {
-      return res.status(400).json({ error: 'A shift is already open' });
-    }
+    const today = manilaToday();
     const result = await pool.query(
-      `INSERT INTO cash_shifts (opened_by, opening_cash) VALUES ($1, $2) RETURNING *`,
-      [req.user.id, opening_cash]
+      `UPDATE cash_shifts SET opening_cash = $1, opened_by = $2
+       WHERE shift_date = $3 AND status = 'active' RETURNING *`,
+      [opening_cash, req.user.id, today]
     );
-    res.status(201).json(result.rows[0]);
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: "Today's shift is not active" });
+    }
+    res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to open shift' });
+    res.status(500).json({ error: 'Failed to set opening cash' });
   }
 });
 
-app.post('/api/shift/close', requireAuth, async (req, res) => {
+app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
   const { closing_cash, notes } = req.body;
   if (closing_cash === undefined || Number(closing_cash) < 0) {
     return res.status(400).json({ error: 'Enter a valid closing cash amount' });
   }
   try {
-    const openShift = await pool.query(`SELECT * FROM cash_shifts WHERE status = 'open' LIMIT 1`);
-    if (openShift.rows.length === 0) {
-      return res.status(400).json({ error: 'No shift is currently open' });
-    }
-    const shift = openShift.rows[0];
-    const now = new Date();
-    const running = await computeExpectedCash(shift.opening_cash, shift.opened_at, now);
-    const difference = Number(closing_cash) - running.expected_cash;
+    const shiftResult = await pool.query(`SELECT * FROM cash_shifts WHERE id = $1`, [req.params.id]);
+    if (shiftResult.rows.length === 0) return res.status(404).json({ error: 'Shift not found' });
+    const shift = shiftResult.rows[0];
+    if (shift.status === 'closed') return res.status(400).json({ error: 'Shift already closed' });
 
+    let { expected_cash: expected, gcash_sales: gcash, utang_charged: utangCharged } = shift;
+
+    if (shift.status === 'active') {
+      const dateStr = shift.shift_date.toISOString().slice(0, 10);
+      const { start } = manilaDayBounds(dateStr);
+      const running = await computeExpectedCash(shift.opening_cash || 0, start, new Date());
+      expected = running.expected_cash;
+      gcash = running.gcash_sales;
+      utangCharged = running.utang_charged;
+    }
+
+    const difference = Number(closing_cash) - Number(expected);
     const result = await pool.query(
       `UPDATE cash_shifts
        SET closed_by = $1, closing_cash = $2, expected_cash = $3, difference = $4,
-           gcash_sales = $5, utang_charged = $6, status = 'closed', closed_at = $7, notes = $8
-       WHERE id = $9 RETURNING *`,
-      [req.user.id, closing_cash, running.expected_cash, difference,
-       running.gcash_sales, running.utang_charged, now, notes || null, shift.id]
+           gcash_sales = $5, utang_charged = $6, status = 'closed', closed_at = NOW(), notes = $7
+       WHERE id = $8 RETURNING *`,
+      [req.user.id, closing_cash, expected, difference, gcash, utangCharged, notes || null, shift.id]
     );
     res.json(result.rows[0]);
   } catch (err) {
