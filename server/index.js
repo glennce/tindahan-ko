@@ -82,7 +82,7 @@ app.get('/api/products', requireAuth, async (req, res) => {
 
 app.post('/api/products', requireAuth, requireRole('owner'), async (req, res) => {
   const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
-
+  const cleanSku = sku && sku.trim() !== '' ? sku.trim() : null;
   if (!name || selling_price === undefined) {
     return res.status(400).json({ error: 'Name and selling price are required' });
   }
