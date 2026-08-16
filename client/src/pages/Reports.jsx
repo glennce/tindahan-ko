@@ -182,6 +182,7 @@ function BarChart({ items, valueKey, labelFormatter }) {
 }
 
 function SalesReport({ data }) {
+  const [showAllCategories, setShowAllCategories] = useState(false);
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -199,7 +200,7 @@ function SalesReport({ data }) {
       </div>
       <div className="bg-surface border border-outline-variant rounded-xl p-4">
         <h2 className="font-semibold text-on-surface mb-3">Sales by Category</h2>
-        {data.categories.map((c) => {
+        {(showAllCategories ? data.categories : data.categories.slice(0, 5)).map((c) => {
           const maxRev = Math.max(...data.categories.map((x) => Number(x.revenue)), 1);
           return (
             <div key={c.category} className="mb-3">
@@ -213,6 +214,14 @@ function SalesReport({ data }) {
             </div>
           );
         })}
+        {data.categories.length > 5 && (
+          <button
+            onClick={() => setShowAllCategories((v) => !v)}
+            className="text-primary text-sm font-medium mt-2"
+          >
+            {showAllCategories ? 'Show less' : `Show ${data.categories.length - 5} more`}
+          </button>
+        )}
       </div>
     </div>
   );

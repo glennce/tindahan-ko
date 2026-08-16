@@ -6,13 +6,15 @@ const emptyForm = {
   units_per_pack: '', unit_label: ''
 };
 
-function ProductModal({ isOpen, onClose, onSave, initialData }) {
+function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = [] }) {
   const [form, setForm] = useState(emptyForm);
+  const [addingNewCategory, setAddingNewCategory] = useState(false);
 
   // When editing, pre-fill the form with the product's existing data.
   // When adding, reset to blank. This runs every time the modal opens.
   useEffect(() => {
     setForm(initialData ? { ...initialData } : emptyForm);
+    setAddingNewCategory(false);
   }, [initialData, isOpen]);
 
   if (!isOpen) return null;
@@ -26,6 +28,8 @@ function ProductModal({ isOpen, onClose, onSave, initialData }) {
     e.preventDefault();
     onSave(form);
   };
+
+  
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
@@ -51,10 +55,44 @@ function ProductModal({ isOpen, onClose, onSave, initialData }) {
             </div>
             <div>
               <label className="text-sm font-medium text-on-surface-variant">Category</label>
-              <input
-                name="category" value={form.category || ''} onChange={handleChange}
-                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
-              />
+              {addingNewCategory || knownCategories.length === 0 ? (
+                <div className="flex gap-2 mt-1">
+                  <input
+                    name="category" value={form.category || ''} onChange={handleChange}
+                    placeholder="Type a new category"
+                    className="w-full border border-outline-variant rounded-lg px-3 py-2"
+                  />
+                  {knownCategories.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setAddingNewCategory(false)}
+                      className="px-3 py-2 rounded-lg border border-outline-variant text-on-surface-variant text-sm whitespace-nowrap"
+                    >
+                      Choose existing
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <select
+                  name="category"
+                  value={form.category || ''}
+                  onChange={(e) => {
+                    if (e.target.value === '__new__') {
+                      setAddingNewCategory(true);
+                      setForm((prev) => ({ ...prev, category: '' }));
+                    } else {
+                      handleChange(e);
+                    }
+                  }}
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+                >
+                  <option value="">Select category...</option>
+                  {knownCategories.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                  <option value="__new__">+ Add new category</option>
+                </select>
+              )}
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">

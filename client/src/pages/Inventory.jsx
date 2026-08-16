@@ -297,6 +297,7 @@ function Inventory() {
         onClose={() => setModalOpen(false)}
         onSave={handleSave}
         initialData={editingProduct}
+        knownCategories={categories.filter((c) => c !== 'All')}
       />
 
       <StockInModal

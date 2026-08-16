@@ -45,6 +45,13 @@ function SalesPOS() {
     return matchesSearch && matchesCategory;
   });
 
+  const filteredProducts = products
+  .filter((p) => {
+    const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
+    const matchesCategory = activeCategory === 'All' || p.category === activeCategory;
+    return matchesSearch && matchesCategory;
+  })
+  .sort((a, b) => Number(b.total_sold) - Number(a.total_sold));
   
     const totalPages = Math.max(Math.ceil(filteredProducts.length / PER_PAGE), 1);
     const paginatedProducts = filteredProducts.slice((page - 1) * PER_PAGE, page * PER_PAGE);

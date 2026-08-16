@@ -72,7 +72,17 @@ app.post('/api/auth/login', async (req, res) => {
 // Real database-backed route
 app.get('/api/products', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM products ORDER BY id');
+    const result = await pool.query(`
+      SELECT p.*, COALESCE(sold.total_sold, 0) AS total_sold
+      FROM products p
+      LEFT JOIN (
+        SELECT si.product_id, SUM(si.quantity) AS total_sold
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+        GROUP BY si.product_id
+      ) sold ON sold.product_id = p.id
+      ORDER BY p.id
+    `);
     res.json(result.rows);
   } catch (err) {
     console.error(err);

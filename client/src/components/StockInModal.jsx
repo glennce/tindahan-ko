@@ -4,12 +4,14 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
   const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState('');
   const [newCostPrice, setNewCostPrice] = useState('');
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     if (isOpen) {
       setProductId('');
       setQuantity('');
       setNewCostPrice('');
+      setSearch('');
     }
   }, [isOpen]);
 
@@ -29,6 +31,11 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
     });
   };
 
+  const filteredProducts = products.filter((p) =>
+    p.name.toLowerCase().includes(search.toLowerCase()) ||
+    (p.category || '').toLowerCase().includes(search.toLowerCase())
+  );
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-surface rounded-xl p-6 w-full max-w-md shadow-lg">
@@ -36,14 +43,22 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
             <label className="text-sm font-medium text-on-surface-variant">Product *</label>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search product..."
+              className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 mb-2"
+            />
             <select
               value={productId}
               onChange={(e) => setProductId(e.target.value)}
               required
-              className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              size={5}
+              className="w-full border border-outline-variant rounded-lg px-3 py-2"
             >
               <option value="">Select product...</option>
-              {products.map((p) => (
+              {filteredProducts.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} (currently {p.stock_quantity} in stock)
                 </option>
