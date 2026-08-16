@@ -86,10 +86,9 @@ app.post('/api/products', requireAuth, requireRole('owner'), async (req, res) =>
   if (!name || selling_price === undefined) {
     return res.status(400).json({ error: 'Name and selling price are required' });
   }
-
   try {
     const result = await pool.query(
-      `INSERT INTO products (name, cleanSku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label)
+      `INSERT INTO products (name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [name, cleanSku, category, cost_price || 0, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier, units_per_pack || null, unit_label || null]
@@ -120,17 +119,15 @@ app.put('/api/products/:id', requireAuth, requireRole('owner'), async (req, res)
   const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
   const cleanSku = sku && sku.trim() !== '' ? sku.trim() : null;
   try {
-      const result = await pool.query(
+    const result = await pool.query(
       `UPDATE products
-       SET name = $1, cleanSku = $2, category = $3, cost_price = $4, selling_price = $5,
+       SET name = $1, sku = $2, category = $3, cost_price = $4, selling_price = $5,
            stock_quantity = $6, low_stock_threshold = $7, supplier = $8, units_per_pack = $9, unit_label = $10
        WHERE id = $11
        RETURNING *`,
       [name, cleanSku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, req.params.id]
     );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Product not found' });
-    }
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
@@ -375,12 +372,15 @@ app.post('/api/sales/:id/void', requireAuth, requireRole('owner'), async (req, r
   }
 });
 
-app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => {
+app.get('/api/dashboard', requireAuth, requireRole('owner'), async (req, res) => {
   try {
+    const today = manilaToday();
+    const { start, end } = manilaDayBounds(today);
+
     const salesToday = await pool.query(`
       SELECT COALESCE(SUM(total_amount),0) AS total_sales, COUNT(*) AS transaction_count
-      FROM sales WHERE created_at::date = CURRENT_DATE AND status = 'completed'
-    `);
+      FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'
+    `, [start, end]);
 
     const profitToday = await pool.query(`
       SELECT COALESCE(SUM((si.unit_price - p.cost_price) * si.quantity),0) AS gross_profit,
@@ -388,8 +388,8 @@ app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => 
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
       JOIN products p ON p.id = si.product_id
-      WHERE s.created_at::date = CURRENT_DATE AND s.status = 'completed'
-    `);
+      WHERE s.created_at >= $1 AND s.created_at < $2 AND s.status = 'completed'
+    `, [start, end]);
 
     const lowStock = await pool.query(`
       SELECT id, name, stock_quantity, units_per_pack, unit_label FROM products
@@ -407,11 +407,11 @@ app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => 
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
       JOIN products p ON p.id = si.product_id
-      WHERE s.created_at::date = CURRENT_DATE AND s.status = 'completed'
+      WHERE s.created_at >= $1 AND s.created_at < $2 AND s.status = 'completed'
       GROUP BY p.id, p.name
       ORDER BY qty_sold DESC
       LIMIT 4
-    `);
+    `, [start, end]);
 
     const latestUtang = await pool.query(`
       SELECT DISTINCT ON (ut.customer_id) ut.customer_id, ut.balance_after, ut.created_at, c.name
@@ -445,41 +445,41 @@ app.get('/api/dashboard',requireAuth, requireRole('owner'), async (req, res) => 
 
 app.get('/api/dashboard/trend', requireAuth, requireRole('owner'), async (req, res) => {
   const { range = 'today' } = req.query;
-
   try {
     if (range === 'today') {
+      const today = manilaToday();
+      const { start, end } = manilaDayBounds(today);
       const result = await pool.query(`
-        SELECT EXTRACT(HOUR FROM created_at)::int AS bucket, SUM(total_amount) AS total
+        SELECT EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Manila')::int AS bucket, SUM(total_amount) AS total
         FROM sales
-        WHERE created_at::date = CURRENT_DATE AND status = 'completed'
+        WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'
         GROUP BY bucket
         ORDER BY bucket
-      `);
+      `, [start, end]);
       const map = Object.fromEntries(result.rows.map((r) => [r.bucket, Number(r.total)]));
-      const trend = Array.from({ length: 24 }, (_, hour) => ({
-        label: hour,
-        total: map[hour] || 0,
-      }));
+      const trend = Array.from({ length: 24 }, (_, hour) => ({ label: hour, total: map[hour] || 0 }));
       return res.json({ granularity: 'hour', trend });
     }
 
     if (range === 'week' || range === 'month') {
-      const days = range === 'week' ? 6 : 29; // 7 or 30 days including today
+      const days = range === 'week' ? 6 : 29;
+      const today = manilaToday();
+      const rangeStartDate = addDaysToManilaDate(today, -days);
+      const { start } = manilaDayBounds(rangeStartDate);
+      const { end } = manilaDayBounds(today);
+
       const result = await pool.query(`
-        SELECT created_at::date AS bucket, SUM(total_amount) AS total
+        SELECT (created_at AT TIME ZONE 'Asia/Manila')::date AS bucket, SUM(total_amount) AS total
         FROM sales
-        WHERE created_at::date BETWEEN CURRENT_DATE - $1::int AND CURRENT_DATE
-          AND status = 'completed'
+        WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'
         GROUP BY bucket
         ORDER BY bucket
-      `, [days]);
+      `, [start, end]);
       const map = Object.fromEntries(result.rows.map((r) => [r.bucket.toISOString().slice(0, 10), Number(r.total)]));
 
       const trend = [];
       for (let i = days; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        const key = d.toISOString().slice(0, 10);
+        const key = addDaysToManilaDate(today, -i);
         trend.push({ label: key, total: map[key] || 0 });
       }
       return res.json({ granularity: 'day', trend });
@@ -493,7 +493,7 @@ app.get('/api/dashboard/trend', requireAuth, requireRole('owner'), async (req, r
 });
 
 // List all customers with their current balance (ledger pattern again)
-app.get('/api/utang', async (req, res) => {
+app.get('/api/utang', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT DISTINCT ON (c.id) c.id AS customer_id, c.name, c.credit_limit,
@@ -510,7 +510,7 @@ app.get('/api/utang', async (req, res) => {
 });
 
 // One customer's full transaction history
-app.get('/api/utang/:customerId', async (req, res) => {
+app.get('/api/utang/:customerId', requireAuth, async (req, res) => {
   try {
     const history = await pool.query(
       `SELECT * FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC`,
@@ -587,7 +587,8 @@ app.get('/api/utang/summary', requireAuth, async (req, res) => {
 app.get('/api/transactions', requireAuth, requireRole('owner'), async (req, res) => {
   const { start = '2000-01-01', end = '2100-12-31', type = 'All', status = 'All', page = 1, limit = 10 } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
-  const params = [start, end, type, status];
+  const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
+  const params = [rangeStart, rangeEnd, type, status];
 
   const cte = `
     WITH combined AS (
@@ -617,7 +618,7 @@ app.get('/api/transactions', requireAuth, requireRole('owner'), async (req, res)
     const rows = await pool.query(
       `${cte}
        SELECT * FROM combined
-       WHERE created_at::date BETWEEN $1 AND $2
+       WHERE created_at >= $1 AND created_at < $2
          AND ($3 = 'All' OR type_label = $3)
          AND ($4 = 'All' OR status = $4)
        ORDER BY created_at DESC
@@ -627,7 +628,7 @@ app.get('/api/transactions', requireAuth, requireRole('owner'), async (req, res)
     const countResult = await pool.query(
       `${cte}
        SELECT COUNT(*) FROM combined
-       WHERE created_at::date BETWEEN $1 AND $2
+       WHERE created_at >= $1 AND created_at < $2
          AND ($3 = 'All' OR type_label = $3)
          AND ($4 = 'All' OR status = $4)`,
       params
@@ -681,7 +682,7 @@ app.get('/api/transactions/:source/:id', requireAuth, requireRole('owner'), asyn
 });
 
 // Expenses CRUD (simple, no update/delete needed for now)
-app.get('/api/expenses', async (req, res) => {
+app.get('/api/expenses', requireAuth, requireRole('owner'), async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM expenses ORDER BY created_at DESC LIMIT 20');
     res.json(result.rows);
@@ -691,7 +692,7 @@ app.get('/api/expenses', async (req, res) => {
   }
 });
 
-app.post('/api/expenses', async (req, res) => {
+app.post('/api/expenses', requireAuth, requireRole('owner'), async (req, res) => {
   const { category, amount, description } = req.body;
   if (!category || !amount) {
     return res.status(400).json({ error: 'Category and amount are required' });
@@ -771,32 +772,34 @@ app.get('/api/reports/sales', requireAuth, requireRole('owner'), async (req, res
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
+  const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
+  const { start: prevRangeStart, end: prevRangeEnd } = manilaRangeBounds(prevStart, prevEnd);
 
   try {
     const current = await pool.query(
       `SELECT COALESCE(SUM(total_amount),0) AS total, COUNT(*) AS count
-       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'`,
-      [start, end]
+       FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
+      [rangeStart, rangeEnd]
     );
     const previous = await pool.query(
       `SELECT COALESCE(SUM(total_amount),0) AS total
-       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'`,
-      [prevStart, prevEnd]
+       FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
+      [prevRangeStart, prevRangeEnd]
     );
     const trend = await pool.query(
-      `SELECT created_at::date AS day, SUM(total_amount) AS total
-       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'
+      `SELECT (created_at AT TIME ZONE 'Asia/Manila')::date AS day, SUM(total_amount) AS total
+       FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'
        GROUP BY day ORDER BY day`,
-      [start, end]
+      [rangeStart, rangeEnd]
     );
     const categories = await pool.query(
       `SELECT COALESCE(p.category, 'Uncategorized') AS category, SUM(si.subtotal) AS revenue
        FROM sale_items si
        JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
        JOIN products p ON p.id = si.product_id
-       WHERE s.created_at::date BETWEEN $1 AND $2
+       WHERE s.created_at >= $1 AND s.created_at < $2
        GROUP BY p.category ORDER BY revenue DESC`,
-      [start, end]
+      [rangeStart, rangeEnd]
     );
 
     res.json({
@@ -816,6 +819,8 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
+  const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
+  const { start: prevRangeStart, end: prevRangeEnd } = manilaRangeBounds(prevStart, prevEnd);
 
   try {
     const grossProfit = async (s, e) => {
@@ -824,31 +829,31 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
          FROM sale_items si
          JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
          JOIN products p ON p.id = si.product_id
-         WHERE s.created_at::date BETWEEN $1 AND $2`,
+         WHERE s.created_at >= $1 AND s.created_at < $2`,
         [s, e]
       );
       return Number(r.rows[0].gross_profit);
     };
 
-    const currentGross = await grossProfit(start, end);
-    const prevGross = await grossProfit(prevStart, prevEnd);
+    const currentGross = await grossProfit(rangeStart, rangeEnd);
+    const prevGross = await grossProfit(prevRangeStart, prevRangeEnd);
 
     const expensesResult = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at::date BETWEEN $1 AND $2`,
-      [start, end]
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
+      [rangeStart, rangeEnd]
     );
     const totalExpenses = Number(expensesResult.rows[0].total);
     const netProfit = currentGross - totalExpenses;
 
     const trend = await pool.query(
-      `SELECT s.created_at::date AS day,
+      `SELECT (s.created_at AT TIME ZONE 'Asia/Manila')::date AS day,
               SUM((si.unit_price - p.cost_price) * si.quantity) AS profit
        FROM sale_items si
        JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
        JOIN products p ON p.id = si.product_id
-       WHERE s.created_at::date BETWEEN $1 AND $2
+       WHERE s.created_at >= $1 AND s.created_at < $2
        GROUP BY day ORDER BY day`,
-      [start, end]
+      [rangeStart, rangeEnd]
     );
 
     res.json({
@@ -868,6 +873,7 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
 app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+  const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
 
   try {
     const stockValue = await pool.query(
@@ -885,9 +891,9 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
        FROM sale_items si
        JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
        JOIN products p ON p.id = si.product_id
-       WHERE s.created_at::date BETWEEN $1 AND $2
+       WHERE s.created_at >= $1 AND s.created_at < $2
        GROUP BY p.id, p.name ORDER BY qty_sold DESC LIMIT 5`,
-      [start, end]
+      [rangeStart, rangeEnd]
     );
     const slowMovers = await pool.query(
       `SELECT p.id, p.name, p.stock_quantity
@@ -895,22 +901,19 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
        WHERE p.id NOT IN (
          SELECT DISTINCT si.product_id FROM sale_items si
          JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-         WHERE s.created_at::date BETWEEN $1 AND $2
+         WHERE s.created_at >= $1 AND s.created_at < $2
        )
        ORDER BY p.stock_quantity DESC LIMIT 5`,
-      [start, end]
+      [rangeStart, rangeEnd]
     );
-
     const lowStockList = await pool.query(`
       SELECT id, name, category, stock_quantity, low_stock_threshold, units_per_pack, unit_label
-      FROM products
-      WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold
+      FROM products WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold
       ORDER BY stock_quantity ASC
     `);
     const outOfStockList = await pool.query(`
       SELECT id, name, category, stock_quantity, low_stock_threshold, units_per_pack, unit_label
-      FROM products
-      WHERE stock_quantity <= 0
+      FROM products WHERE stock_quantity <= 0
       ORDER BY name ASC
     `);
 
@@ -933,6 +936,7 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
 app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+  const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
 
   try {
     const outstanding = await pool.query(`
@@ -946,8 +950,8 @@ app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res
       `SELECT
         COALESCE(SUM(amount) FILTER (WHERE type = 'charge'), 0) AS charged,
         COALESCE(SUM(amount) FILTER (WHERE type = 'payment'), 0) AS paid
-       FROM utang_transactions WHERE created_at::date BETWEEN $1 AND $2`,
-      [start, end]
+       FROM utang_transactions WHERE created_at >= $1 AND created_at < $2`,
+      [rangeStart, rangeEnd]
     );
     const topDebtors = await pool.query(`
       SELECT c.id, c.name, latest.balance_after AS balance
@@ -976,26 +980,28 @@ app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, 
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { prevStart, prevEnd } = previousPeriod(start, end);
+  const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
+  const { start: prevRangeStart, end: prevRangeEnd } = manilaRangeBounds(prevStart, prevEnd);
 
   try {
     const current = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at::date BETWEEN $1 AND $2`,
-      [start, end]
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
+      [rangeStart, rangeEnd]
     );
     const previous = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at::date BETWEEN $1 AND $2`,
-      [prevStart, prevEnd]
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
+      [prevRangeStart, prevRangeEnd]
     );
     const byCategory = await pool.query(
       `SELECT category, SUM(amount) AS total FROM expenses
-       WHERE created_at::date BETWEEN $1 AND $2
+       WHERE created_at >= $1 AND created_at < $2
        GROUP BY category ORDER BY total DESC`,
-      [start, end]
+      [rangeStart, rangeEnd]
     );
     const recent = await pool.query(
-      `SELECT * FROM expenses WHERE created_at::date BETWEEN $1 AND $2
+      `SELECT * FROM expenses WHERE created_at >= $1 AND created_at < $2
        ORDER BY created_at DESC LIMIT 20`,
-      [start, end]
+      [rangeStart, rangeEnd]
     );
 
     res.json({
@@ -1097,6 +1103,18 @@ function manilaDayBounds(dateStr) {
   const end = new Date(start);
   end.setUTCDate(end.getUTCDate() + 1);
   return { start, end };
+}
+
+function manilaRangeBounds(startDateStr, endDateStr) {
+  const { start } = manilaDayBounds(startDateStr);
+  const { end } = manilaDayBounds(endDateStr);
+  return { start, end };
+}
+
+function addDaysToManilaDate(dateStr, deltaDays) {
+  const d = new Date(`${dateStr}T12:00:00+08:00`);
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
 }
 
 async function ensureTodayShift() {
