@@ -39,12 +39,6 @@ function SalesPOS() {
   const moreCategories = categories.slice(QUICK_COUNT);
   const activeInMore = moreCategories.includes(activeCategory);
 
-  const filteredProducts = products.filter((p) => {
-    const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
-    const matchesCategory = activeCategory === 'All' || p.category === activeCategory;
-    return matchesSearch && matchesCategory;
-  });
-
   const filteredProducts = products
   .filter((p) => {
     const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
