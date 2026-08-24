@@ -5,6 +5,7 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
   const [quantity, setQuantity] = useState('');
   const [newCostPrice, setNewCostPrice] = useState('');
   const [search, setSearch] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -19,16 +20,27 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
 
   const selectedProduct = products.find((p) => p.id === Number(productId));
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!productId || !quantity || Number(quantity) <= 0) return;
     const actualPieces = selectedProduct?.units_per_pack
       ? Number(quantity) * selectedProduct.units_per_pack
       : Number(quantity);
-    onSave(productId, {
-      quantity: actualPieces,
-      cost_price: newCostPrice ? Number(newCostPrice) : null,
-    });
+    try {
+      setSaving(true);
+      await onSave(productId, {
+        quantity: actualPieces,
+        cost_price: newCostPrice ? Number(newCostPrice) : null,
+      });
+      // Stay in modal for next restock — just clear inputs
+      setProductId('');
+      setQuantity('');
+      setNewCostPrice('');
+    } catch {
+      // error toast is handled by parent — keep form values for retry
+    } finally {
+      setSaving(false);
+    }
   };
 
   const filteredProducts = products.filter((p) =>
@@ -110,18 +122,20 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
             </p>
           </div>
 
+          <p className="text-xs text-on-surface-variant">Modal stays open so you can restock the next product. Click Done when finished.</p>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button" onClick={onClose}
               className="px-4 py-2 rounded-lg border border-outline-variant text-on-surface-variant"
             >
-              Cancel
+              Done
             </button>
             <button
               type="submit"
-              className="px-4 py-2 rounded-lg bg-primary text-on-primary font-medium"
+              disabled={saving}
+              className="px-4 py-2 rounded-lg bg-primary text-on-primary font-medium disabled:opacity-50"
             >
-              Confirm Stock In
+              {saving ? 'Saving...' : 'Confirm Stock In'}
             </button>
           </div>
         </form>

@@ -99,11 +99,12 @@ function Inventory() {
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Restock failed');
-      setStockInOpen(false);
       fetchProducts();
       showToast('Stock updated');
+      return true;
     } catch (err) {
       showToast(err.message, 'error');
+      throw err;
     }
   };
 
