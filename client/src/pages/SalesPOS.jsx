@@ -113,8 +113,6 @@ function SalesPOS() {
       return { available: Number(c.credit_limit) - Number(c.balance) };
     })()
   : null;
-  const change =
-    paymentMethod === 'cash' && amountTendered ? Number(amountTendered) - total : null;
 
   const resetSale = () => {
     setCart([]);
@@ -134,10 +132,7 @@ function SalesPOS() {
       showToast('Select a customer for utang sales.', 'error');
       return;
     }
-    if (paymentMethod === 'cash' && (!amountTendered || Number(amountTendered) < total)) {
-      showToast('Cash received must be at least the total amount.', 'error');
-      return;
-    }
+    // Cash no longer requires Cash Received input — total is used as amount_tendered
     if (paymentMethod === 'utang' && selectedCustomerInfo && total > selectedCustomerInfo.available) {
       showToast(`Exceeds available credit (₱${selectedCustomerInfo.available.toFixed(2)})`, 'error');
       return;
@@ -165,7 +160,7 @@ function SalesPOS() {
             unit_price,
           })),
           payment_method: paymentMethod,
-          amount_tendered: (paymentMethod === 'cash' || paymentMethod === 'split') ? Number(amountTendered) : null,
+          amount_tendered: paymentMethod === 'split' ? Number(amountTendered) : paymentMethod === 'cash' ? total : null,
           discount_amount: discountAmount,
         }),
       });
@@ -388,22 +383,7 @@ function SalesPOS() {
             ))}
           </div>
 
-          {paymentMethod === 'cash' && (
-            <div className="mb-3">
-              <label className="text-sm text-on-surface-variant">Cash Received</label>
-              <input
-                type="number"
-                value={amountTendered}
-                onChange={(e) => setAmountTendered(e.target.value)}
-                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
-              />
-              {change !== null && (
-                <p className="text-sm text-on-surface-variant mt-1">
-                  Change: ₱{change.toFixed(2)}
-                </p>
-              )}
-            </div>
-          )}
+
           
           {paymentMethod === 'utang' && (
             <p className="text-xs text-on-surface-variant mb-2">
