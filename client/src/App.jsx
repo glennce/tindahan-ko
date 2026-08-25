@@ -12,6 +12,7 @@ import More from './pages/More';
 import Customers from './pages/Customers';
 import OwnerRoute from './components/OwnerRoute';
 import Shift from './pages/Shift';
+import Expenses from './pages/Expenses';
 
 function App() {
   return (
@@ -35,6 +36,7 @@ function App() {
         <Route path="more" element={<More />} />
         <Route path="customers" element={<Customers />} />
         <Route path="shift" element={<Shift />} />
+        <Route path="expenses" element={<OwnerRoute><Expenses /></OwnerRoute>} />
       </Route>
     </Routes>
   );

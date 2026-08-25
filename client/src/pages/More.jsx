@@ -27,6 +27,9 @@ function More() {
             <Link to="/shift" className="block px-4 py-3 text-on-surface font-medium">
               Cash Drawer
             </Link>
+            <Link to="/expenses" className="block px-4 py-3 text-on-surface font-medium">
+              Expenses
+            </Link>
             <Link to="/reports" className="block px-4 py-3 text-on-surface font-medium">
               Reports
             </Link>

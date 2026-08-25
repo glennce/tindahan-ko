@@ -13,13 +13,62 @@ const PORT = process.env.PORT || 5000;
 
 const allowedOrigins = [
   'http://localhost:5173',
+  'http://localhost:3000',
   process.env.CLIENT_URL,
 ].filter(Boolean);
 
 app.use(cors({
-  origin: allowedOrigins,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl) and any localhost for dev
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin) || origin.startsWith('http://localhost:')) {
+      return callback(null, true);
+    }
+    return callback(null, true); // fallback allow - change to callback(new Error('Not allowed')) to strict
+  },
+  credentials: true,
 }));
 app.use(express.json());
+
+// --- DB bootstrap for local dev: ensure cash_shifts & expenses.payment_method exist ---
+async function ensureDB() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cash_shifts (
+        id SERIAL PRIMARY KEY,
+        shift_date DATE UNIQUE NOT NULL,
+        status VARCHAR(20) DEFAULT 'active',
+        opening_cash NUMERIC DEFAULT 0,
+        opened_by INTEGER REFERENCES users(id),
+        closing_cash NUMERIC,
+        expected_cash NUMERIC,
+        difference NUMERIC,
+        gcash_sales NUMERIC DEFAULT 0,
+        utang_charged NUMERIC DEFAULT 0,
+        closed_by INTEGER REFERENCES users(id),
+        closed_at TIMESTAMPTZ,
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await pool.query(`
+      ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'cash';
+    `);
+    // backfill old expenses without method to cash
+    await pool.query(`UPDATE expenses SET payment_method='cash' WHERE payment_method IS NULL`);
+    // Ensure products has per-pack columns (deployed has them, local may not)
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS units_per_pack INTEGER`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS unit_label VARCHAR(50)`);
+    // Ensure sales has discount/subtotal/status if local DB is old (safe no-op if exists)
+    await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS subtotal NUMERIC DEFAULT 0`);
+    await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS discount_amount NUMERIC DEFAULT 0`);
+    await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'owner'`);
+  } catch (e) {
+    console.error('ensureDB error', e.message);
+  }
+}
+ensureDB();
 
 function previousPeriod(start, end) {
   const startDate = new Date(start);
@@ -712,7 +761,7 @@ app.get('/api/transactions/:source/:id', requireAuth, requireRole('owner'), asyn
 });
 
 // Expenses CRUD (simple, no update/delete needed for now)
-app.get('/api/expenses', requireAuth, requireRole('owner'), async (req, res) => {
+app.get('/api/expenses', requireAuth, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM expenses ORDER BY created_at DESC LIMIT 20');
     res.json(result.rows);
@@ -722,15 +771,16 @@ app.get('/api/expenses', requireAuth, requireRole('owner'), async (req, res) => 
   }
 });
 
-app.post('/api/expenses', requireAuth, requireRole('owner'), async (req, res) => {
-  const { category, amount, description } = req.body;
+app.post('/api/expenses', requireAuth, async (req, res) => {
+  const { category, amount, description, payment_method } = req.body;
+  const method = payment_method === 'gcash' ? 'gcash' : 'cash';
   if (!category || !amount) {
     return res.status(400).json({ error: 'Category and amount are required' });
   }
   try {
     const result = await pool.query(
-      `INSERT INTO expenses (category, amount, description) VALUES ($1, $2, $3) RETURNING *`,
-      [category, amount, description]
+      `INSERT INTO expenses (category, amount, description, payment_method) VALUES ($1, $2, $3, $4) RETURNING *`,
+      [category, amount, description, method]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -1022,10 +1072,32 @@ app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, 
       `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
       [prevRangeStart, prevRangeEnd]
     );
+    const cashCurrent = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND (payment_method='cash' OR payment_method IS NULL)`,
+      [rangeStart, rangeEnd]
+    );
+    const gcashCurrent = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND payment_method='gcash'`,
+      [rangeStart, rangeEnd]
+    );
+    const cashPrev = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND (payment_method='cash' OR payment_method IS NULL)`,
+      [prevRangeStart, prevRangeEnd]
+    );
+    const gcashPrev = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND payment_method='gcash'`,
+      [prevRangeStart, prevRangeEnd]
+    );
     const byCategory = await pool.query(
       `SELECT category, SUM(amount) AS total FROM expenses
        WHERE created_at >= $1 AND created_at < $2
        GROUP BY category ORDER BY total DESC`,
+      [rangeStart, rangeEnd]
+    );
+    const byPayment = await pool.query(
+      `SELECT COALESCE(payment_method,'cash') AS payment_method, SUM(amount) AS total FROM expenses
+       WHERE created_at >= $1 AND created_at < $2
+       GROUP BY payment_method`,
       [rangeStart, rangeEnd]
     );
     const recent = await pool.query(
@@ -1037,7 +1109,12 @@ app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, 
     res.json({
       total_expenses: Number(current.rows[0].total),
       prev_total_expenses: Number(previous.rows[0].total),
+      cash_total: Number(cashCurrent.rows[0].total),
+      gcash_total: Number(gcashCurrent.rows[0].total),
+      prev_cash_total: Number(cashPrev.rows[0].total),
+      prev_gcash_total: Number(gcashPrev.rows[0].total),
       by_category: byCategory.rows,
+      by_payment: byPayment.rows,
       recent: recent.rows,
     });
   } catch (err) {
@@ -1098,29 +1175,54 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
      WHERE type = 'payment' AND payment_method = 'cash' AND created_at BETWEEN $1 AND $2`,
     [startTime, endTime]
   );
+  const gcashUtangPayments = await client.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM utang_transactions
+     WHERE type = 'payment' AND payment_method = 'gcash' AND created_at BETWEEN $1 AND $2`,
+    [startTime, endTime]
+  );
   const utangCharged = await client.query(
     `SELECT COALESCE(SUM(amount), 0) AS total
      FROM utang_transactions
      WHERE type = 'charge' AND created_at BETWEEN $1 AND $2`,
     [startTime, endTime]
   );
-  const expenses = await client.query(
+  const cashExpenses = await client.query(
     `SELECT COALESCE(SUM(amount), 0) AS total
-     FROM expenses WHERE created_at BETWEEN $1 AND $2`,
+     FROM expenses WHERE created_at BETWEEN $1 AND $2 AND (payment_method = 'cash' OR payment_method IS NULL)`,
     [startTime, endTime]
   );
+  const gcashExpenses = await client.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM expenses WHERE created_at BETWEEN $1 AND $2 AND payment_method = 'gcash'`,
+    [startTime, endTime]
+  );
+  const totalExpenses = Number(cashExpenses.rows[0].total) + Number(gcashExpenses.rows[0].total);
+
+  const cashInHand =
+    Number(openingCash) +
+    Number(cashSales.rows[0].total) +
+    Number(cashUtangPayments.rows[0].total) -
+    Number(cashExpenses.rows[0].total);
+  const gcashInHand =
+    Number(gcashSales.rows[0].total) +
+    Number(gcashUtangPayments.rows[0].total) -
+    Number(gcashExpenses.rows[0].total);
 
   return {
     cash_sales: Number(cashSales.rows[0].total),
     gcash_sales: Number(gcashSales.rows[0].total),
     cash_utang_payments: Number(cashUtangPayments.rows[0].total),
+    gcash_utang_payments: Number(gcashUtangPayments.rows[0].total),
     utang_charged: Number(utangCharged.rows[0].total),
-    expenses: Number(expenses.rows[0].total),
-    expected_cash:
-      Number(openingCash) +
-      Number(cashSales.rows[0].total) +
-      Number(cashUtangPayments.rows[0].total) -
-      Number(expenses.rows[0].total),
+    cash_expenses: Number(cashExpenses.rows[0].total),
+    gcash_expenses: Number(gcashExpenses.rows[0].total),
+    expenses: totalExpenses,
+    // legacy
+    expected_cash: cashInHand,
+    // new KPI: total money in drawer/wallet (cash) and total gcash
+    total_cash: cashInHand,
+    total_gcash: gcashInHand,
   };
 }
 

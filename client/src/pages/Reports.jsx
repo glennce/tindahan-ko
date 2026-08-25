@@ -8,7 +8,6 @@ const TABS = [
   { key: 'profit', label: 'Profit', icon: Activity },
   { key: 'inventory', label: 'Inventory', icon: Package },
   { key: 'utang', label: 'Utang', icon: CreditCard },
-  { key: 'expenses', label: 'Expenses', icon: Receipt },
 ];
 
 function firstOfMonth() {
@@ -40,7 +39,6 @@ function Reports() {
   const [start, setStart] = useState(firstOfMonth());
   const [end, setEnd] = useState(today());
   const [data, setData] = useState(null);
-  const [expenseForm, setExpenseForm] = useState({ category: 'Store Supplies', amount: '', description: '' });
 
   const loadReport = () => {
     setData(null);
@@ -58,17 +56,6 @@ function Reports() {
     loadReport();
   }, [activeTab, start, end]);
 
-  const addExpense = async (e) => {
-    e.preventDefault();
-    if (!expenseForm.amount) return;
-    await apiFetch('/expenses', {
-      method: 'POST',
-      body: JSON.stringify(expenseForm),
-    });
-    setExpenseForm({ category: 'Store Supplies', amount: '', description: '' });
-    loadReport();
-  };
-
   const handleExportCsv = () => {
     if (!data) return;
     let rows = [];
@@ -80,8 +67,6 @@ function Reports() {
       rows = [['Product', 'Qty Sold'], ...data.top_movers.map((p) => [p.name, p.qty_sold])];
     } else if (activeTab === 'utang') {
       rows = [['Customer', 'Balance'], ...data.top_debtors.map((c) => [c.name, c.balance])];
-    } else if (activeTab === 'expenses') {
-      rows = [['Category', 'Amount', 'Description', 'Date'], ...data.recent.map((e) => [e.category, e.amount, e.description || '', e.created_at])];
     }
     downloadCsv(`${activeTab}-report-${start}-to-${end}.csv`, rows);
   };
@@ -136,9 +121,6 @@ function Reports() {
               {activeTab === 'profit' && <ProfitReport data={data} />}
               {activeTab === 'inventory' && <InventoryReport data={data} />}
               {activeTab === 'utang' && <UtangReport data={data} />}
-              {activeTab === 'expenses' && (
-                <ExpensesReport data={data} form={expenseForm} setForm={setExpenseForm} onAdd={addExpense} />
-              )}
             </>
           )}
         </div>
@@ -343,65 +325,6 @@ function UtangReport({ data }) {
             <span className="text-error font-medium">₱{Number(c.balance).toFixed(2)}</span>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-const expenseIcon = {
-  'Store Supplies': '🛍️', 'Utilities': '⚡', 'Rent': '🏠', 'Transportation': '🚗', 'Other': '📦',
-};
-
-function ExpensesReport({ data, form, setForm, onAdd }) {
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <StatCard label="Total Expenses" value={`₱${data.total_expenses.toFixed(2)}`}
-          change={pctChange(data.total_expenses, data.prev_total_expenses)} icon={Receipt} />
-      </div>
-      <div className="bg-surface border border-outline-variant rounded-xl p-4">
-        <h2 className="font-semibold text-on-surface mb-3">By Category</h2>
-        {data.by_category.map((c) => (
-          <div key={c.category} className="flex justify-between text-sm py-2 border-t border-outline-variant">
-            <span className="text-on-surface">{c.category}</span>
-            <span className="text-error font-medium">₱{Number(c.total).toFixed(2)}</span>
-          </div>
-        ))}
-      </div>
-      <div className="bg-surface border border-outline-variant rounded-xl p-4">
-        <h2 className="font-semibold text-on-surface mb-3">Expense Log</h2>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <form onSubmit={onAdd} className="space-y-2">
-            <select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-              className="w-full border border-outline-variant rounded-lg px-3 py-2">
-              <option>Store Supplies</option><option>Utilities</option><option>Rent</option>
-              <option>Transportation</option><option>Other</option>
-            </select>
-            <input type="number" step="0.01" placeholder="Amount (₱)" value={form.amount}
-              onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
-              className="w-full border border-outline-variant rounded-lg px-3 py-2" />
-            <input type="text" placeholder="Description (optional)" value={form.description}
-              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              className="w-full border border-outline-variant rounded-lg px-3 py-2" />
-            <button type="submit" className="w-full bg-primary text-on-primary py-2 rounded-lg font-medium">
-              Add Expense
-            </button>
-          </form>
-          <div className="space-y-2 max-h-60 overflow-y-auto">
-            {data.recent.map((e) => (
-              <div key={e.id} className="flex justify-between items-center text-sm border-b border-outline-variant pb-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg">{expenseIcon[e.category] || '📦'}</span>
-                  <div>
-                    <p className="text-on-surface">{e.category}</p>
-                    <p className="text-on-surface-variant text-xs">{e.description}</p>
-                  </div>
-                </div>
-                <span className="text-error font-medium">-₱{Number(e.amount).toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );
