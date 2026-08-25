@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import PaymentModal from '../components/PaymentModal';
 import { useToast } from '../context/ToastContext';
+import { Eye } from 'lucide-react';
 
 const UTANG_API = '/utang';
 
@@ -21,6 +22,8 @@ function Utang() {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [history, setHistory] = useState([]);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [debtSale, setDebtSale] = useState(null);
+  const [loadingDebtSale, setLoadingDebtSale] = useState(false);
   const { showToast } = useToast();
 
   const loadAll = () => {
@@ -61,6 +64,20 @@ function Utang() {
       if (updated) selectCustomer({ ...updated, customer_id: payload.customer_id });
     } catch (err) {
       showToast(err.message, 'error');
+    }
+  };
+
+  const viewDebtProducts = async (saleId) => {
+    try {
+      setLoadingDebtSale(true);
+      const res = await apiFetch(`/sales/${saleId}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load sale details');
+      setDebtSale(data);
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setLoadingDebtSale(false);
     }
   };
 
@@ -173,29 +190,46 @@ function Utang() {
 
               <h3 className="text-sm font-medium text-on-surface-variant mb-2">Transaction History</h3>
               <div className="space-y-1 max-h-64 overflow-y-auto mb-4">
+                {history.length === 0 && (
+                  <p className="text-on-surface-variant text-sm text-center py-4">No history yet.</p>
+                )}
                 {history.map((h) => {
                   const icon = historyIcon[h.type];
+                  const canViewProducts = h.sale_id && h.type === 'charge';
                   return (
-                    <div key={h.id} className="flex justify-between items-center py-2 border-t border-outline-variant">
-                      <div className="flex items-center gap-3">
+                    <div key={h.id} className="flex justify-between items-center py-2 border-t border-outline-variant gap-2">
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
                         <div className={`w-8 h-8 rounded-full ${icon.bg} ${icon.color} flex items-center justify-center text-xs font-bold shrink-0`}>
                           {h.type === 'payment' ? '₱' : '+'}
                         </div>
-                        <div>
-                          <p className="text-on-surface text-sm capitalize">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-on-surface text-sm capitalize truncate">
                             {h.type === 'payment' ? `Payment (${h.payment_method || 'cash'})` : 'Charge'}
                           </p>
-                          <p className="text-on-surface-variant text-xs">
+                          <p className="text-on-surface-variant text-xs truncate">
                             {new Date(h.created_at).toLocaleDateString()}
                             {h.note ? ` · ${h.note}` : ''}
+                            {h.sale_id ? ` · #${h.sale_id}` : ''}
                           </p>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <p className={h.type === 'payment' ? 'text-secondary font-medium' : 'text-error font-medium'}>
-                          {h.type === 'payment' ? '-' : '+'}₱{Number(h.amount).toFixed(2)}
-                        </p>
-                        <p className="text-on-surface-variant text-xs">Bal: ₱{Number(h.balance_after).toFixed(2)}</p>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="text-right">
+                          <p className={h.type === 'payment' ? 'text-secondary font-medium text-sm' : 'text-error font-medium text-sm'}>
+                            {h.type === 'payment' ? '-' : '+'}₱{Number(h.amount).toFixed(2)}
+                          </p>
+                          <p className="text-on-surface-variant text-xs">Bal: ₱{Number(h.balance_after).toFixed(2)}</p>
+                        </div>
+                        {canViewProducts && (
+                          <button
+                            onClick={() => viewDebtProducts(h.sale_id)}
+                            disabled={loadingDebtSale}
+                            className="p-1.5 text-primary hover:bg-primary-container hover:text-on-primary rounded-md transition-colors"
+                            title="View debt products"
+                          >
+                            <Eye size={16} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -220,6 +254,57 @@ function Utang() {
         customers={ledger}
         preselectedCustomer={selectedCustomer}
       />
+
+      {debtSale && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setDebtSale(null)} />
+          <div className="fixed inset-y-0 right-0 w-full max-w-md bg-surface shadow-2xl z-50 flex flex-col border-l border-outline-variant">
+            <div className="flex justify-between items-center px-4 py-3 border-b border-outline-variant">
+              <h2 className="font-semibold text-on-surface">Debt Products · #{debtSale.id}</h2>
+              <button onClick={() => setDebtSale(null)} className="text-on-surface-variant text-xl">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <p className="text-on-surface-variant text-sm mb-3">
+                {debtSale.customer_name || selectedCustomer?.name || 'Walk-in'} · {new Date(debtSale.created_at).toLocaleString()} · <span className="capitalize">{debtSale.payment_method}</span>
+                {debtSale.status === 'voided' && <span className="text-error"> · Voided</span>}
+              </p>
+              <div className="space-y-2 mb-3">
+                {(debtSale.items || []).map((item) => (
+                  <div key={item.id} className="flex justify-between text-sm border-t border-outline-variant pt-2">
+                    <span className="text-on-surface">{item.product_name} × {item.quantity}</span>
+                    <span className="text-on-surface-variant">₱{Number(item.subtotal).toFixed(2)}</span>
+                  </div>
+                ))}
+                {(debtSale.items || []).length === 0 && (
+                  <p className="text-on-surface-variant text-sm text-center py-4">No products found.</p>
+                )}
+              </div>
+              <div className="text-sm space-y-1 border-t border-outline-variant pt-2">
+                <div className="flex justify-between text-on-surface-variant">
+                  <span>Subtotal</span><span>₱{Number(debtSale.subtotal).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-error">
+                  <span>Discount</span><span>-₱{Number(debtSale.discount_amount).toFixed(2)}</span>
+                </div>
+                {debtSale.payment_method === 'split' && (
+                  <>
+                    <div className="flex justify-between text-on-surface-variant">
+                      <span>Cash Paid</span><span>₱{Number(debtSale.amount_tendered).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-error">
+                      <span>Charged to Utang</span>
+                      <span>₱{(Number(debtSale.total_amount) - Number(debtSale.amount_tendered)).toFixed(2)}</span>
+                    </div>
+                  </>
+                )}
+                <div className="flex justify-between font-bold text-on-surface pt-1 border-t border-outline-variant">
+                  <span>Total</span><span>₱{Number(debtSale.total_amount).toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

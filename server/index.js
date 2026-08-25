@@ -333,6 +333,26 @@ app.post('/api/sales', requireAuth, async (req, res) => {
   }
 });
 
+app.get('/api/sales/:id', requireAuth, async (req, res) => {
+  try {
+    const sale = await pool.query(
+      `SELECT s.*, c.name AS customer_name FROM sales s
+       LEFT JOIN customers c ON c.id = s.customer_id WHERE s.id = $1`,
+      [req.params.id]
+    );
+    if (sale.rows.length === 0) return res.status(404).json({ error: 'Sale not found' });
+    const items = await pool.query(
+      `SELECT si.*, p.name AS product_name FROM sale_items si
+       JOIN products p ON p.id = si.product_id WHERE si.sale_id = $1`,
+      [req.params.id]
+    );
+    return res.json({ source: 'sale', ...sale.rows[0], items: items.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch sale' });
+  }
+});
+
 app.post('/api/sales/:id/void', requireAuth, requireRole('owner'), async (req, res) => {
   const client = await pool.connect();
   try {
