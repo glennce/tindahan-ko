@@ -1299,7 +1299,87 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
        WHERE status = 'pending_count' ORDER BY shift_date ASC`
     );
 
-    res.json({ shift, running, pending: pending.rows });
+    // Closed totals: all sales from yesterday and so on (only days already counted as closed)
+    // Don't include today's active sales until counted
+    const closedCashSales = await pool.query(`
+      SELECT COALESCE(SUM(CASE WHEN s.payment_method='cash' THEN s.total_amount WHEN s.payment_method='split' THEN s.amount_tendered ELSE 0 END),0) AS total
+      FROM sales s
+      WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+    `);
+    const closedGcashSales = await pool.query(`
+      SELECT COALESCE(SUM(s.total_amount),0) AS total FROM sales s
+      WHERE s.status='completed' AND s.payment_method='gcash' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+    `);
+    const closedCashPayments = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
+      WHERE type='payment' AND payment_method='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+    `);
+    const closedGcashPayments = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
+      WHERE type='payment' AND payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+    `);
+    const closedCashExpenses = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total FROM expenses
+      WHERE (payment_method='cash' OR payment_method IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+    `);
+    const closedGcashExpenses = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total FROM expenses
+      WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+    `);
+    // For total cash in hand, use actual counted cash (latest closed), fallback to computed net if none
+    const closedActualRes = await pool.query(`
+      SELECT closing_cash, closed_at FROM cash_shifts WHERE status='closed' ORDER BY closed_at DESC LIMIT 1
+    `);
+    const hasClosedActual = closedActualRes.rows.length > 0 && closedActualRes.rows[0].closing_cash !== null;
+    let closedTotalCash = hasClosedActual ? Number(closedActualRes.rows[0].closing_cash) : (Number(closedCashSales.rows[0].total) + Number(closedCashPayments.rows[0].total) - Number(closedCashExpenses.rows[0].total));
+    let closedTotalGcash = Number(closedGcashSales.rows[0].total) + Number(closedGcashPayments.rows[0].total) - Number(closedGcashExpenses.rows[0].total);
+    let closedCashExpDisplay = Number(closedCashExpenses.rows[0].total);
+    let closedGcashExpDisplay = Number(closedGcashExpenses.rows[0].total);
+
+    // Deduct expenses that happened AFTER the last counted time from previous sale (user wants expense to reduce previous sale, not today's pending sales)
+    if (hasClosedActual) {
+      const lastClosedAt = closedActualRes.rows[0].closed_at;
+      const lastClosedDateStr = new Date(lastClosedAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+      const isTodayClosed = lastClosedDateStr === today;
+      const postCashExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE (payment_method='cash' OR payment_method IS NULL) AND created_at > $1`, [lastClosedAt]);
+      const postGcashExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND created_at > $1`, [lastClosedAt]);
+      const postCash = Number(postCashExp.rows[0].total);
+      const postGcash = Number(postGcashExp.rows[0].total);
+      if (postCash) {
+        closedTotalCash -= postCash;
+        if (!isTodayClosed) {
+          // today's expenses not yet in closedCashExpenses (closed dates don't include today), so add only today's portion for display
+          const postCashTodayExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE (payment_method='cash' OR payment_method IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
+          closedCashExpDisplay += Number(postCashTodayExp.rows[0].total);
+        }
+      }
+      if (postGcash) {
+        closedTotalGcash -= postGcash;
+        if (!isTodayClosed) {
+          const postGcashTodayExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
+          closedGcashExpDisplay += Number(postGcashTodayExp.rows[0].total);
+        }
+      }
+    } else {
+      // No counted day yet: KPI is 0 - today's pending expenses (so expense still deducts)
+      const todayCashExp = Number(running.cash_expenses ?? 0);
+      const todayGcashExp = Number(running.gcash_expenses ?? 0);
+      if (todayCashExp) { closedTotalCash -= todayCashExp; closedCashExpDisplay += todayCashExp; }
+      if (todayGcashExp) { closedTotalGcash -= todayGcashExp; closedGcashExpDisplay += todayGcashExp; }
+    }
+
+    const closed = {
+      cash_sales: Number(closedCashSales.rows[0].total),
+      gcash_sales: Number(closedGcashSales.rows[0].total),
+      cash_utang_payments: Number(closedCashPayments.rows[0].total),
+      gcash_utang_payments: Number(closedGcashPayments.rows[0].total),
+      cash_expenses: closedCashExpDisplay,
+      gcash_expenses: closedGcashExpDisplay,
+      total_cash: closedTotalCash,
+      total_gcash: closedTotalGcash,
+    };
+
+    res.json({ shift, running, pending: pending.rows, closed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load current shift' });

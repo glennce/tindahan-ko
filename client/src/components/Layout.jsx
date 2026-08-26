@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { LayoutGrid, ShoppingCart, Package, CreditCard, Menu, Receipt } from 'lucide-react';
+import { LayoutGrid, ShoppingCart, Package, CreditCard, Menu } from 'lucide-react';
 
 function Layout() {
 
@@ -16,7 +16,6 @@ function Layout() {
     { to: '/transactions', label: 'Transactions', roles: ['owner'] },
     { to: '/reports', label: 'Reports', roles: ['owner'] },
     { to: '/shift', label: 'Cash Drawer', roles: ['owner', 'cashier'] },
-    { to: '/expenses', label: 'Expenses', roles: ['owner'] },
   ].filter((item) => item.roles.includes(user?.role));
   
   const mobileNavItems = [
