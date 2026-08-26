@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 function StockInModal({ isOpen, onClose, onSave, products }) {
   const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState('');
+  const [looseUnits, setLooseUnits] = useState('');
   const [newCostPrice, setNewCostPrice] = useState('');
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
@@ -11,6 +12,7 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
     if (isOpen) {
       setProductId('');
       setQuantity('');
+      setLooseUnits('');
       setNewCostPrice('');
       setSearch('');
     }
@@ -22,10 +24,15 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!productId || !quantity || Number(quantity) <= 0) return;
+    if (!productId) return;
+    const packs = Number(quantity) || 0;
+    const loose = Number(looseUnits) || 0;
+    if (packs <= 0 && loose <= 0) return;
+    if (packs < 0 || loose < 0) return;
     const actualPieces = selectedProduct?.units_per_pack
-      ? Number(quantity) * selectedProduct.units_per_pack
-      : Number(quantity);
+      ? packs * selectedProduct.units_per_pack + loose
+      : packs + loose;
+    if (actualPieces <= 0) return;
     try {
       setSaving(true);
       await onSave(productId, {
@@ -35,6 +42,7 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
       // Stay in modal for next restock — just clear inputs
       setProductId('');
       setQuantity('');
+      setLooseUnits('');
       setNewCostPrice('');
     } catch {
       // error toast is handled by parent — keep form values for retry
@@ -78,32 +86,69 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
             </select>
           </div>
 
-          <div>
-            <label className="text-sm font-medium text-on-surface-variant">
-              {selectedProduct?.units_per_pack ? `Packs Received *` : `Quantity Received *`}
-            </label>
-            <input
-              type="number"
-              min="1"
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-              required
-              placeholder={selectedProduct?.units_per_pack ? 'e.g. 5' : 'e.g. 24'}
-              className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
-            />
-            {selectedProduct && quantity && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">
+                Per Pack *
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                placeholder={selectedProduct?.units_per_pack ? `e.g. 5 packs` : `e.g. 5`}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
+              {selectedProduct?.units_per_pack ? (
+                <p className="text-xs text-on-surface-variant mt-1">
+                  {selectedProduct.units_per_pack} {selectedProduct.unit_label}s per pack
+                </p>
+              ) : (
+                <p className="text-xs text-on-surface-variant mt-1">Packs</p>
+              )}
+            </div>
+            <div>
+              <label className="text-sm font-medium text-on-surface-variant">
+                By Piece / Stick / Bottle
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={looseUnits}
+                onChange={(e) => setLooseUnits(e.target.value.replace(/[^0-9]/g, ''))}
+                placeholder={selectedProduct?.units_per_pack ? `e.g. 10 ${selectedProduct.unit_label}s` : `e.g. 10 pcs`}
+                className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+              />
               <p className="text-xs text-on-surface-variant mt-1">
+                {selectedProduct?.units_per_pack ? `Loose ${selectedProduct.unit_label}s` : `Loose pcs`}
+              </p>
+            </div>
+          </div>
+          <p className="text-xs text-on-surface-variant">Fill either or both: e.g. Camel 20/pack → 5 packs + 10 sticks = 110 sticks</p>
+
+          {selectedProduct && (quantity || looseUnits) && (
+            <div className="bg-surface-container-low rounded-lg p-2">
+              <p className="text-xs text-on-surface-variant">
                 {selectedProduct.units_per_pack ? (
                   <>
-                    Adding {Number(quantity) * selectedProduct.units_per_pack} {selectedProduct.unit_label}s
-                    — new stock level: {selectedProduct.stock_quantity + Number(quantity) * selectedProduct.units_per_pack} {selectedProduct.unit_label}s
+                    Adding <span className="font-medium text-on-surface">{(Number(quantity) || 0) * selectedProduct.units_per_pack + (Number(looseUnits) || 0)} {selectedProduct.unit_label}s</span>
+                    {Number(quantity) > 0 && Number(looseUnits) > 0 && ` (${Number(quantity)} packs × ${selectedProduct.units_per_pack} + ${Number(looseUnits)} loose)`}
+                    {Number(quantity) > 0 && !Number(looseUnits) && ` (${Number(quantity)} packs)`}
+                    {!Number(quantity) && Number(looseUnits) > 0 && ` (${Number(looseUnits)} loose)`}
+                    <br />
+                    New stock level: <span className="font-medium text-on-surface">{selectedProduct.stock_quantity + (Number(quantity) || 0) * selectedProduct.units_per_pack + (Number(looseUnits) || 0)} {selectedProduct.unit_label}s</span>
                   </>
                 ) : (
-                  <>New stock level will be: {selectedProduct.stock_quantity + Number(quantity)} pcs</>
+                  <>
+                    Adding <span className="font-medium text-on-surface">{(Number(quantity) || 0) + (Number(looseUnits) || 0)} pcs</span>
+                    {Number(quantity) > 0 && Number(looseUnits) > 0 && ` (${Number(quantity)} packs + ${Number(looseUnits)} loose)`}
+                    <br />
+                    New stock level: <span className="font-medium text-on-surface">{selectedProduct.stock_quantity + (Number(quantity) || 0) + (Number(looseUnits) || 0)} pcs</span>
+                  </>
                 )}
               </p>
-            )}
-          </div>
+            </div>
+          )}
 
           <div>
             <label className="text-sm font-medium text-on-surface-variant">

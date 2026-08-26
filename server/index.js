@@ -56,6 +56,18 @@ async function ensureDB() {
     `);
     // backfill old expenses without method to cash
     await pool.query(`UPDATE expenses SET payment_method='cash' WHERE payment_method IS NULL`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS money_transfers (
+        id SERIAL PRIMARY KEY,
+        from_wallet VARCHAR(20) NOT NULL,
+        to_wallet VARCHAR(20) NOT NULL,
+        amount NUMERIC NOT NULL,
+        note TEXT,
+        bank_name VARCHAR(100),
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
     // Ensure products has per-pack columns (deployed has them, local may not)
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS units_per_pack INTEGER`);
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS unit_label VARCHAR(50)`);
@@ -1361,12 +1373,28 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
           closedGcashExpDisplay += postGcashToday;
         }
       }
+      // Money transfers: affect counted totals (previous sale)
+      const postCashTransfersOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND created_at > $1`, [lastClosedAt]);
+      const postCashTransfersIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND created_at > $1`, [lastClosedAt]);
+      const postGcashTransfersOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='gcash' AND created_at > $1`, [lastClosedAt]);
+      const postGcashTransfersIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='gcash' AND created_at > $1`, [lastClosedAt]);
+      const netCashTransfer = Number(postCashTransfersIn.rows[0].total) - Number(postCashTransfersOut.rows[0].total);
+      const netGcashTransfer = Number(postGcashTransfersIn.rows[0].total) - Number(postGcashTransfersOut.rows[0].total);
+      closedTotalCash += netCashTransfer;
+      closedTotalGcash += netGcashTransfer;
     } else {
       // No counted day yet: KPI is 0 - today's pending expenses (so expense still deducts)
       const todayCashExp = Number(running.cash_expenses ?? 0);
       const todayGcashExp = Number(running.gcash_expenses ?? 0);
       if (todayCashExp) { closedTotalCash -= todayCashExp; closedCashExpDisplay += todayCashExp; }
       if (todayGcashExp) { closedTotalGcash -= todayGcashExp; closedGcashExpDisplay += todayGcashExp; }
+      // Also apply today's transfers even with no counted day
+      const todayCashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      const todayCashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      const todayGcashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      const todayGcashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      closedTotalCash += Number(todayCashTransIn.rows[0].total) - Number(todayCashTransOut.rows[0].total);
+      closedTotalGcash += Number(todayGcashTransIn.rows[0].total) - Number(todayGcashTransOut.rows[0].total);
     }
 
     const closed = {
@@ -1479,6 +1507,45 @@ app.get('/api/shift/:id', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load shift detail' });
+  }
+});
+
+// Money transfers: cash <-> gcash (monitoring only, no real bank integration)
+app.get('/api/transfers', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT t.*, u.name AS created_by_name
+      FROM money_transfers t
+      LEFT JOIN users u ON u.id = t.created_by
+      ORDER BY t.created_at DESC LIMIT 50
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load transfers' });
+  }
+});
+
+app.post('/api/transfers', requireAuth, async (req, res) => {
+  const { from_wallet, to_wallet, amount, note } = req.body;
+  const valid = ['cash','gcash'];
+  if (!valid.includes(from_wallet) || !valid.includes(to_wallet)) {
+    return res.status(400).json({ error: 'Invalid wallets. Use cash or gcash.' });
+  }
+  if (from_wallet === to_wallet) {
+    return res.status(400).json({ error: 'From and To must be different.' });
+  }
+  const amt = Number(amount);
+  if (!amt || amt <= 0) return res.status(400).json({ error: 'Amount must be > 0' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO money_transfers (from_wallet, to_wallet, amount, note, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [from_wallet, to_wallet, amt, note || null, req.user.id]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to create transfer' });
   }
 });
 
