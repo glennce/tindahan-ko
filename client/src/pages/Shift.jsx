@@ -167,8 +167,10 @@ export default function Shift() {
   const totalGcash = Number(closedData.total_gcash ?? 0);
   const cashExpenses = running.cash_expenses ?? 0;
   const gcashExpenses = running.gcash_expenses ?? 0;
-  const todayCashPending = (running.total_cash ?? running.expected_cash ?? 0);
-  const todayGcashPending = (running.total_gcash ?? running.gcash_sales ?? 0);
+  // Today pending — NOT deducting expenses (expenses deduct only from counted total per user request)
+  const todayCashPending = Number(shift?.opening_cash || 0) + Number(running.cash_sales ?? 0) + Number(running.cash_utang_payments ?? 0);
+  // GCash pending: only sales (yesterday + today), no payments — per user request
+  const todayGcashPending = Number(running.gcash_sales ?? 0);
 
   return (
     <div>
@@ -196,12 +198,10 @@ export default function Shift() {
             <Smartphone className="text-secondary" size={22} />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total GCash — Counted</p>
+            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total GCash — Counted (last 2 days)</p>
             <p className="text-2xl font-bold text-on-surface">₱{Number(totalGcash).toFixed(2)}</p>
-            {/* <p className="text-xs text-on-surface-variant truncate">
-              Counted · GCash sales ₱{Number(closedData.gcash_sales ?? 0).toFixed(2)} + Payments ₱{Number(closedData.gcash_utang_payments ?? 0).toFixed(2)} - Expenses ₱{Number(closedData.gcash_expenses ?? 0).toFixed(2)}
-            </p> */}
-            <p className="text-xs text-secondary truncate">Today pending: ₱{Number(todayGcashPending).toFixed(2)} → added after count</p>
+            <p className="text-xs text-on-surface-variant truncate">Counted (yesterday & previous) · Sales ₱{Number(closedData.gcash_sales ?? 0).toFixed(2)} - Expenses ₱{Number(closedData.gcash_expenses ?? 0).toFixed(2)} — no GCash payments</p>
+            <p className="text-xs text-secondary truncate">Today pending GCash sales: ₱{Number(todayGcashPending).toFixed(2)} → added after count</p>
           </div>
         </div>
       </div>
@@ -243,7 +243,6 @@ export default function Shift() {
                 <div className={`flex justify-between font-bold ${Number(shift.difference) === 0 ? 'text-secondary' : 'text-error'}`}><span>Difference</span><span>₱{Number(shift.difference).toFixed(2)}</span></div>
                 <div className="pt-2 border-t border-outline-variant space-y-2">
                   <div className="flex justify-between font-bold text-on-surface"><span>GCash — Final</span><span>₱{Number(running.gcash_sales).toFixed(2)}</span></div>
-                  <div className="flex justify-between text-on-surface-variant"><span>GCash Payments</span><span>+₱{Number(running.gcash_utang_payments || 0).toFixed(2)}</span></div>
                   <div className="flex justify-between text-error"><span>GCash Expenses</span><span>-₱{Number(gcashExpenses).toFixed(2)}</span></div>
                 </div>
                 {shift.notes && <p className="text-xs text-on-surface-variant pt-2 border-t border-outline-variant">Notes: {shift.notes}</p>}
@@ -268,9 +267,7 @@ export default function Shift() {
                 <p className="text-xs text-secondary">Not added to KPI yet — counted after close</p>
                 <div className="pt-2 border-t border-outline-variant space-y-2">
                   <div className="flex justify-between text-secondary"><span>GCash Sales (today)</span><span>+₱{Number(running.gcash_sales).toFixed(2)}</span></div>
-                  <div className="flex justify-between text-secondary"><span>GCash Payments (today)</span><span>+₱{Number(running.gcash_utang_payments || 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between text-error"><span>GCash Expenses (today)</span><span>-₱{Number(gcashExpenses).toFixed(2)}</span></div>
-                  <div className="flex justify-between font-bold text-on-surface pt-1 border-t border-outline-variant"><span>Today's GCash — Pending</span><span>₱{Number(todayGcashPending).toFixed(2)}</span></div>
+                  <div className="flex justify-between font-bold text-on-surface pt-1 border-t border-outline-variant"><span>Today's GCash — Pending (sales only)</span><span>₱{Number(todayGcashPending).toFixed(2)}</span></div>
                 </div>
               </div>
               <p className="text-xs text-on-surface-variant mb-2">KPI above shows only counted days. Today's added after count.</p>
