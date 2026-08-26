@@ -1068,6 +1068,72 @@ app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res
   }
 });
 
+app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (req, res) => {
+  const { product_id, start, end, granularity = 'day' } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+  const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
+  const validGran = ['day','week','month'];
+  const gran = validGran.includes(granularity) ? granularity : 'day';
+  try {
+    let groupExpr, orderExpr;
+    if (gran === 'day') {
+      groupExpr = `(s.created_at AT TIME ZONE 'Asia/Manila')::date`;
+      orderExpr = `period::date`;
+    } else if (gran === 'week') {
+      groupExpr = `date_trunc('week', s.created_at AT TIME ZONE 'Asia/Manila')::date`;
+      orderExpr = `period::date`;
+    } else {
+      groupExpr = `date_trunc('month', s.created_at AT TIME ZONE 'Asia/Manila')::date`;
+      orderExpr = `period::date`;
+    }
+    const params = [rangeStart, rangeEnd];
+    let productFilter = '';
+    if (product_id) {
+      productFilter = `AND si.product_id = $3`;
+      params.push(product_id);
+    }
+    const trend = await pool.query(`
+      SELECT ${groupExpr} AS period,
+             SUM(si.quantity) AS qty_sold,
+             SUM(si.subtotal) AS revenue,
+             COUNT(DISTINCT s.id) AS transactions
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id AND s.status='completed'
+      WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter}
+      GROUP BY 1
+      ORDER BY 1
+    `, params);
+    const total = await pool.query(`
+      SELECT COALESCE(SUM(si.quantity),0) AS total_qty,
+             COALESCE(SUM(si.subtotal),0) AS total_revenue,
+             COUNT(DISTINCT s.id) AS total_transactions
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id AND s.status='completed'
+      WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter}
+    `, params);
+    const topProducts = !product_id ? await pool.query(`
+      SELECT p.id, p.name, p.category, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id AND s.status='completed'
+      JOIN products p ON p.id = si.product_id
+      WHERE s.created_at >= $1 AND s.created_at < $2
+      GROUP BY p.id, p.name, p.category
+      ORDER BY qty_sold DESC
+    `, [rangeStart, rangeEnd]) : { rows: [] };
+    res.json({
+      granularity: gran,
+      trend: trend.rows.map(r => ({ period: r.period instanceof Date ? r.period.toISOString().slice(0,10) : r.period, qty_sold: Number(r.qty_sold), revenue: Number(r.revenue), transactions: Number(r.transactions) })),
+      total_qty: Number(total.rows[0].total_qty),
+      total_revenue: Number(total.rows[0].total_revenue),
+      total_transactions: Number(total.rows[0].total_transactions),
+      top_products: topProducts.rows.map(r => ({ ...r, qty_sold: Number(r.qty_sold), revenue: Number(r.revenue) })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load product sales report' });
+  }
+});
+
 app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });

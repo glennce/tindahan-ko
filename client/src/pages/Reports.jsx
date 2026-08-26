@@ -7,6 +7,7 @@ const TABS = [
   { key: 'sales', label: 'Sales', icon: TrendingUp },
   { key: 'profit', label: 'Profit', icon: Activity },
   { key: 'inventory', label: 'Inventory', icon: Package },
+  { key: 'product', label: 'Products', icon: Package },
   { key: 'utang', label: 'Utang', icon: CreditCard },
 ];
 
@@ -41,6 +42,7 @@ function Reports() {
   const [data, setData] = useState(null);
 
   const loadReport = () => {
+    if (activeTab === 'product') return;
     setData(null);
     apiFetch(`/reports/${activeTab}?start=${start}&end=${end}`)
       .then((res) => res.json())
@@ -57,7 +59,7 @@ function Reports() {
   }, [activeTab, start, end]);
 
   const handleExportCsv = () => {
-    if (!data) return;
+    if (!data || activeTab === 'product') return;
     let rows = [];
     if (activeTab === 'sales') {
       rows = [['Date', 'Total'], ...data.trend.map((t) => [t.day, t.total])];
@@ -113,7 +115,9 @@ function Reports() {
 
         {/* Report content */}
         <div className="flex-1">
-          {!data ? (
+          {activeTab === 'product' ? (
+            <ProductReport start={start} end={end} />
+          ) : !data ? (
             <p className="text-on-surface-variant text-sm">Loading...</p>
           ) : (
             <>
@@ -326,6 +330,158 @@ function UtangReport({ data }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ProductReport({ start, end }) {
+  const [products, setProducts] = useState([]);
+  const [productId, setProductId] = useState('');
+  const [granularity, setGranularity] = useState('day');
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [productSearch, setProductSearch] = useState('');
+
+  useEffect(() => {
+    apiFetch('/products').then((r) => r.json()).then(setProducts).catch(() => {});
+  }, []);
+
+  const [error, setError] = useState(null);
+  const load = () => {
+    setLoading(true);
+    setData(null);
+    setError(null);
+    const params = new URLSearchParams({ start, end, granularity });
+    if (productId) params.set('product_id', productId);
+    apiFetch(`/reports/product-sales?${params}`).then(async (r) => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Failed to load');
+      setData(d);
+      setLoading(false);
+    }).catch((e) => {
+      setError(e.message);
+      setLoading(false);
+    });
+  };
+
+  useEffect(() => { load(); }, [start, end, granularity, productId]);
+
+  const handleExport = () => {
+    if (!data || !data.trend) return;
+    const rows = [['Period', 'Qty Sold', 'Revenue', 'Transactions'], ...data.trend.map((t) => [t.period, t.qty_sold, t.revenue.toFixed(2), t.transactions])];
+    downloadCsv(`product-${productId || 'all'}-${granularity}-${start}-to-${end}.csv`, rows);
+  };
+
+  const selectedProduct = products.find((p) => String(p.id) === String(productId));
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-surface border border-outline-variant rounded-xl p-4">
+        <h2 className="font-semibold text-on-surface mb-3">Product Sales — Day / Week / Month</h2>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <div>
+            <label className="text-xs text-on-surface-variant">Product</label>
+            <select value={productId} onChange={(e) => setProductId(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
+              <option value="">All products (top 10)</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} {p.category ? `— ${p.category}` : ''}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-on-surface-variant">Granularity</label>
+            <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
+              <option value="day">Day</option>
+              <option value="week">Week</option>
+              <option value="month">Month</option>
+            </select>
+          </div>
+          <div className="flex items-end">
+            <button onClick={handleExport} className="w-full border border-outline-variant text-primary text-sm font-medium px-3 py-2 rounded-lg flex items-center justify-center gap-1">
+              <Download size={16} /> Export CSV
+            </button>
+          </div>
+        </div>
+        {selectedProduct && (
+          <p className="text-xs text-on-surface-variant mt-2">Showing: <span className="font-medium text-on-surface">{selectedProduct.name}</span> — {granularity} breakdown for {start} to {end}</p>
+        )}
+      </div>
+
+      {error ? (
+        <p className="text-error text-sm">Error: {error}</p>
+      ) : loading ? (
+        <p className="text-on-surface-variant text-sm">Loading...</p>
+      ) : !data || !data.trend ? (
+        <p className="text-on-surface-variant text-sm">No data.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <StatCard label="Total Qty Sold" value={data.total_qty} icon={Package} />
+            <StatCard label="Total Revenue" value={`₱${Number(data.total_revenue).toFixed(2)}`} icon={TrendingUp} />
+            <StatCard label="Transactions" value={data.total_transactions} icon={Activity} />
+          </div>
+
+          <div className="bg-surface border border-outline-variant rounded-xl p-4">
+            <h3 className="font-semibold text-on-surface mb-3">Trend — Qty Sold per {granularity}</h3>
+            {data.trend.length === 0 ? (
+              <p className="text-on-surface-variant text-sm">No sales for this product in range.</p>
+            ) : (
+              <BarChart items={data.trend} valueKey="qty_sold" labelFormatter={(t) => `${t.period}: ${t.qty_sold} pcs`} />
+            )}
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-left text-sm min-w-[500px]">
+                <thead className="bg-surface-container-low text-on-surface-variant">
+                  <tr>
+                    <th className="px-4 py-2">Period</th>
+                    <th className="px-4 py-2">Qty Sold</th>
+                    <th className="px-4 py-2">Revenue</th>
+                    <th className="px-4 py-2">Transactions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.trend.map((t) => (
+                    <tr key={t.period} className="border-t border-outline-variant">
+                      <td className="px-4 py-2 text-on-surface">{t.period}</td>
+                      <td className="px-4 py-2 font-medium text-on-surface">{t.qty_sold} {selectedProduct ? formatStock(selectedProduct).split(' ').pop() || 'pcs' : 'pcs'}</td>
+                      <td className="px-4 py-2 text-on-surface-variant">₱{Number(t.revenue).toFixed(2)}</td>
+                      <td className="px-4 py-2 text-on-surface-variant">{t.transactions}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {!productId && data.top_products && (
+            <div className="bg-surface border border-outline-variant rounded-xl p-4">
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="font-semibold text-on-surface">All Products in Range — {data.top_products.length} products</h3>
+                <button onClick={() => setShowAll(!showAll)} className="text-primary text-sm font-medium">
+                  {showAll ? 'Show Top 10' : `Show All (${data.top_products.length})`}
+                </button>
+              </div>
+              <input type="text" placeholder="Search products..." value={productSearch} onChange={(e) => setProductSearch(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mb-3 text-sm" />
+              {(() => {
+                const filtered = data.top_products.filter((p) => p.name.toLowerCase().includes(productSearch.toLowerCase()) || (p.category||'').toLowerCase().includes(productSearch.toLowerCase()));
+                const display = showAll ? filtered : filtered.slice(0, 10);
+                if (filtered.length === 0) return <p className="text-on-surface-variant text-sm">No products found.</p>;
+                return (
+                  <>
+                    {!showAll && filtered.length > 10 && <p className="text-xs text-on-surface-variant mb-2">Showing top 10 of {filtered.length} — click Show All to see all</p>}
+                    {display.map((p) => (
+                      <div key={p.id} className="flex justify-between text-sm py-2 border-t border-outline-variant">
+                        <span className="text-on-surface">{p.name} <span className="text-on-surface-variant text-xs">{p.category || ''}</span></span>
+                        <span className="text-primary font-medium">{p.qty_sold} sold · ₱{Number(p.revenue).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </>
+                );
+              })()}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
