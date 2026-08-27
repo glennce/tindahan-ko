@@ -315,16 +315,12 @@ export default function Shift() {
                     <div className="flex justify-between text-on-surface-variant"><span>Starting Cash</span><span>₱{Number(shift.opening_cash).toFixed(2)}</span></div>
                     <div className="flex justify-between text-secondary"><span>Cash Sales (today)</span><span>+₱{Number(running.cash_sales).toFixed(2)}</span></div>
                     <div className="flex justify-between text-secondary"><span>Credit Payments Cash (today)</span><span>+₱{Number(running.cash_utang_payments).toFixed(2)}</span></div>
-                    <div className="flex justify-between text-on-surface-variant"><span>Cash Expenses (today)</span><span className="text-error">-₱{Number(cashExpenses).toFixed(2)}</span></div>
-                    <p className="text-xs text-error">→ Deducted from Total Cash — Counted, not from Today's pending</p>
                     <div className="flex justify-between font-bold text-on-surface pt-2 border-t border-outline-variant text-base"><span>Today's Cash — Pending</span><span>₱{Number(todayCashPending).toFixed(2)}</span></div>
-                    <p className="text-xs text-secondary">No expense deducted here — pending added after close</p>
+                    <p className="text-xs text-secondary">Pending — no expense deducted (expenses go to Counted above)</p>
                     <div className="pt-2 border-t border-outline-variant space-y-2">
                       <div className="flex justify-between text-secondary"><span>GCash Sales (today)</span><span>+₱{Number(running.gcash_sales).toFixed(2)}</span></div>
-                      <div className="flex justify-between text-on-surface-variant"><span>GCash Expenses (today)</span><span className="text-error">-₱{Number(gcashExpenses).toFixed(2)}</span></div>
-                      <p className="text-xs text-error">→ Deducted from Total GCash — Counted</p>
                       <div className="flex justify-between font-bold text-on-surface pt-1 border-t border-outline-variant"><span>Today's GCash — Pending (sales only)</span><span>₱{Number(todayGcashPending).toFixed(2)}</span></div>
-                      <p className="text-xs text-secondary">No expense deducted here</p>
+                      <p className="text-xs text-secondary">Pending — no expense deducted</p>
                     </div>
                   </div>
                   <p className="text-xs text-on-surface-variant mb-2">KPI above shows only counted days. Today's added after count.</p>

@@ -1277,15 +1277,19 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
   );
   const totalExpenses = Number(cashExpenses.rows[0].total) + Number(gcashExpenses.rows[0].total);
 
-  const cashInHand =
+  // Expected is total sale for the day WITHOUT deducting expenses (expenses only affect counted total)
+  const expectedCash =
     Number(openingCash) +
     Number(cashSales.rows[0].total) +
-    Number(cashUtangPayments.rows[0].total) -
-    Number(cashExpenses.rows[0].total);
-  const gcashInHand =
+    Number(cashUtangPayments.rows[0].total);
+  const expectedGcash =
     Number(gcashSales.rows[0].total) +
-    Number(gcashUtangPayments.rows[0].total) -
-    Number(gcashExpenses.rows[0].total);
+    Number(gcashUtangPayments.rows[0].total);
+
+  const cashInHand =
+    expectedCash - Number(cashExpenses.rows[0].total);
+  const gcashInHand =
+    expectedGcash - Number(gcashExpenses.rows[0].total);
 
   return {
     cash_sales: Number(cashSales.rows[0].total),
@@ -1296,9 +1300,10 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
     cash_expenses: Number(cashExpenses.rows[0].total),
     gcash_expenses: Number(gcashExpenses.rows[0].total),
     expenses: totalExpenses,
-    // legacy
-    expected_cash: cashInHand,
-    // new KPI: total money in drawer/wallet (cash) and total gcash
+    // Expected is total sale for the day (no expense deduction) — used for Today's pending & close Expected
+    expected_cash: expectedCash,
+    expected_gcash: expectedGcash,
+    // Actual drawer with expenses — used for counted KPI via closed logic, kept for legacy
     total_cash: cashInHand,
     total_gcash: gcashInHand,
   };
