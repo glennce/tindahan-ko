@@ -1069,29 +1069,43 @@ app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res
 });
 
 app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (req, res) => {
-  const { product_id, start, end, granularity = 'day' } = req.query;
+  const { product_id, category, start, end, granularity = 'day' } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
   const validGran = ['day','week','month'];
   const gran = validGran.includes(granularity) ? granularity : 'day';
   try {
-    let groupExpr, orderExpr;
+    let groupExpr;
     if (gran === 'day') {
       groupExpr = `(s.created_at AT TIME ZONE 'Asia/Manila')::date`;
-      orderExpr = `period::date`;
     } else if (gran === 'week') {
       groupExpr = `date_trunc('week', s.created_at AT TIME ZONE 'Asia/Manila')::date`;
-      orderExpr = `period::date`;
     } else {
       groupExpr = `date_trunc('month', s.created_at AT TIME ZONE 'Asia/Manila')::date`;
-      orderExpr = `period::date`;
     }
     const params = [rangeStart, rangeEnd];
     let productFilter = '';
+    let categoryFilter = '';
+    let categoryJoin = '';
     if (product_id) {
-      productFilter = `AND si.product_id = $3`;
+      productFilter = `AND si.product_id = $${params.length + 1}`;
       params.push(product_id);
     }
+    if (category) {
+      categoryFilter = `AND p.category = $${params.length + 1}`;
+      categoryJoin = `JOIN products p ON p.id = si.product_id`;
+      params.push(category);
+      // need p join for category filter even if product_id not set, ensure join exists
+      if (!product_id) {
+        // already have join for category, no extra
+      }
+    } else if (product_id) {
+      // need join for product filter? si already has product_id, no need
+    }
+    // For trend, need to handle category filter which requires join
+    const trendJoin = category ? `JOIN products p ON p.id = si.product_id` : '';
+    const trendCategoryFilter = category ? `AND p.category = $${params.length}` : '';
+    // Actually params already includes category if present, so use same
     const trend = await pool.query(`
       SELECT ${groupExpr} AS period,
              SUM(si.quantity) AS qty_sold,
@@ -1099,7 +1113,8 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
              COUNT(DISTINCT s.id) AS transactions
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id AND s.status='completed'
-      WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter}
+      ${trendJoin}
+      WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter} ${trendCategoryFilter}
       GROUP BY 1
       ORDER BY 1
     `, params);
@@ -1109,17 +1124,28 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
              COUNT(DISTINCT s.id) AS total_transactions
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id AND s.status='completed'
-      WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter}
+      ${trendJoin}
+      WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter} ${trendCategoryFilter}
     `, params);
-    const topProducts = !product_id ? await pool.query(`
-      SELECT p.id, p.name, p.category, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id AND s.status='completed'
-      JOIN products p ON p.id = si.product_id
-      WHERE s.created_at >= $1 AND s.created_at < $2
-      GROUP BY p.id, p.name, p.category
-      ORDER BY qty_sold DESC
-    `, [rangeStart, rangeEnd]) : { rows: [] };
+    // For top products, filter by category if selected, and respect date range
+    let topProducts = { rows: [] };
+    if (!product_id) {
+      const topParams = [rangeStart, rangeEnd];
+      let topCategoryFilter = '';
+      if (category) {
+        topCategoryFilter = `AND p.category = $3`;
+        topParams.push(category);
+      }
+      topProducts = await pool.query(`
+        SELECT p.id, p.name, p.category, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id AND s.status='completed'
+        JOIN products p ON p.id = si.product_id
+        WHERE s.created_at >= $1 AND s.created_at < $2 ${topCategoryFilter}
+        GROUP BY p.id, p.name, p.category
+        ORDER BY qty_sold DESC
+      `, topParams);
+    }
     res.json({
       granularity: gran,
       trend: trend.rows.map(r => ({ period: r.period instanceof Date ? r.period.toISOString().slice(0,10) : r.period, qty_sold: Number(r.qty_sold), revenue: Number(r.revenue), transactions: Number(r.transactions) })),
@@ -1391,7 +1417,7 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
     `);
     const closedGcashSales = await pool.query(`
       SELECT COALESCE(SUM(s.total_amount),0) AS total FROM sales s
-      WHERE s.status='completed' AND s.payment_method='gcash' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed' ORDER BY shift_date DESC LIMIT 2)
+      WHERE s.status='completed' AND s.payment_method='gcash' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
     `);
     const closedCashPayments = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
@@ -1399,7 +1425,7 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
     `);
     const closedGcashPayments = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
-      WHERE type='payment' AND payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed' ORDER BY shift_date DESC LIMIT 2)
+      WHERE type='payment' AND payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
     `);
     const closedCashExpenses = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM expenses
@@ -1407,16 +1433,15 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
     `);
     const closedGcashExpenses = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM expenses
-      WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed' ORDER BY shift_date DESC LIMIT 2)
+      WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
     `);
-    // For total cash in hand, use actual counted cash (latest closed), fallback to computed net if none
+    // For total cash in hand, use actual counted cash (latest closed), fallback to computed net if none — same for GCash
     const closedActualRes = await pool.query(`
       SELECT closing_cash, closed_at FROM cash_shifts WHERE status='closed' ORDER BY closed_at DESC LIMIT 1
     `);
     const hasClosedActual = closedActualRes.rows.length > 0 && closedActualRes.rows[0].closing_cash !== null;
     let closedTotalCash = hasClosedActual ? Number(closedActualRes.rows[0].closing_cash) : (Number(closedCashSales.rows[0].total) + Number(closedCashPayments.rows[0].total) - Number(closedCashExpenses.rows[0].total));
-    // GCash KPI: only sales yesterday and following day (last 2 counted days), no gcash payments — per user request
-    let closedTotalGcash = Number(closedGcashSales.rows[0].total) - Number(closedGcashExpenses.rows[0].total);
+    let closedTotalGcash = Number(closedGcashSales.rows[0].total) + Number(closedGcashPayments.rows[0].total) - Number(closedGcashExpenses.rows[0].total);
     let closedCashExpDisplay = Number(closedCashExpenses.rows[0].total);
     let closedGcashExpDisplay = Number(closedGcashExpenses.rows[0].total);
 
@@ -1435,13 +1460,14 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
           closedCashExpDisplay += Number(postCashTodayExp.rows[0].total);
         }
       }
-      // GCash: only deduct today's GCash expenses after last count when today not yet counted (last 2 days already include today if closed)
-      if (!isTodayClosed) {
-        const postGcashTodayExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
-        const postGcashToday = Number(postGcashTodayExp.rows[0].total);
-        if (postGcashToday) {
-          closedTotalGcash -= postGcashToday;
-          closedGcashExpDisplay += postGcashToday;
+      // GCash: same as cash — deduct ALL post GCash expenses after last count
+      const postGcashExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND created_at > $1`, [lastClosedAt]);
+      const postGcash = Number(postGcashExp.rows[0].total);
+      if (postGcash) {
+        closedTotalGcash -= postGcash;
+        if (!isTodayClosed) {
+          const postGcashTodayExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
+          closedGcashExpDisplay += Number(postGcashTodayExp.rows[0].total);
         }
       }
       // Money transfers: affect counted totals (previous sale)

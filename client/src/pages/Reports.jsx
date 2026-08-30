@@ -336,7 +336,7 @@ function UtangReport({ data }) {
 
 function ProductReport({ start, end }) {
   const [products, setProducts] = useState([]);
-  const [productId, setProductId] = useState('');
+  const [category, setCategory] = useState('');
   const [granularity, setGranularity] = useState('day');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -347,13 +347,15 @@ function ProductReport({ start, end }) {
     apiFetch('/products').then((r) => r.json()).then(setProducts).catch(() => {});
   }, []);
 
+  const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort();
+
   const [error, setError] = useState(null);
   const load = () => {
     setLoading(true);
     setData(null);
     setError(null);
     const params = new URLSearchParams({ start, end, granularity });
-    if (productId) params.set('product_id', productId);
+    if (category) params.set('category', category);
     apiFetch(`/reports/product-sales?${params}`).then(async (r) => {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed to load');
@@ -365,15 +367,13 @@ function ProductReport({ start, end }) {
     });
   };
 
-  useEffect(() => { load(); }, [start, end, granularity, productId]);
+  useEffect(() => { load(); }, [start, end, granularity, category]);
 
   const handleExport = () => {
     if (!data || !data.trend) return;
     const rows = [['Period', 'Qty Sold', 'Revenue', 'Transactions'], ...data.trend.map((t) => [t.period, t.qty_sold, t.revenue.toFixed(2), t.transactions])];
-    downloadCsv(`product-${productId || 'all'}-${granularity}-${start}-to-${end}.csv`, rows);
+    downloadCsv(`product-${category || 'all'}-${granularity}-${start}-to-${end}.csv`, rows);
   };
-
-  const selectedProduct = products.find((p) => String(p.id) === String(productId));
 
   return (
     <div className="space-y-4">
@@ -381,11 +381,11 @@ function ProductReport({ start, end }) {
         <h2 className="font-semibold text-on-surface mb-3">Product Sales — Day / Week / Month</h2>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           <div>
-            <label className="text-xs text-on-surface-variant">Product</label>
-            <select value={productId} onChange={(e) => setProductId(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
-              <option value="">All products (top 10)</option>
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>{p.name} {p.category ? `— ${p.category}` : ''}</option>
+            <label className="text-xs text-on-surface-variant">Category</label>
+            <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
+              <option value="">All categories</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>{c}</option>
               ))}
             </select>
           </div>
@@ -403,8 +403,8 @@ function ProductReport({ start, end }) {
             </button>
           </div>
         </div>
-        {selectedProduct && (
-          <p className="text-xs text-on-surface-variant mt-2">Showing: <span className="font-medium text-on-surface">{selectedProduct.name}</span> — {granularity} breakdown for {start} to {end}</p>
+        {category && (
+          <p className="text-xs text-on-surface-variant mt-2">Showing: <span className="font-medium text-on-surface">{category}</span> — {granularity} breakdown for {start} to {end} — also filtered in All Products below</p>
         )}
       </div>
 
@@ -443,7 +443,7 @@ function ProductReport({ start, end }) {
                   {data.trend.map((t) => (
                     <tr key={t.period} className="border-t border-outline-variant">
                       <td className="px-4 py-2 text-on-surface">{t.period}</td>
-                      <td className="px-4 py-2 font-medium text-on-surface">{t.qty_sold} {selectedProduct ? formatStock(selectedProduct).split(' ').pop() || 'pcs' : 'pcs'}</td>
+                      <td className="px-4 py-2 font-medium text-on-surface">{t.qty_sold} pcs</td>
                       <td className="px-4 py-2 text-on-surface-variant">₱{Number(t.revenue).toFixed(2)}</td>
                       <td className="px-4 py-2 text-on-surface-variant">{t.transactions}</td>
                     </tr>
@@ -453,10 +453,10 @@ function ProductReport({ start, end }) {
             </div>
           </div>
 
-          {!productId && data.top_products && (
+          {data.top_products && (
             <div className="bg-surface border border-outline-variant rounded-xl p-4">
               <div className="flex justify-between items-center mb-3">
-                <h3 className="font-semibold text-on-surface">All Products in Range — {data.top_products.length} products</h3>
+                <h3 className="font-semibold text-on-surface">{category ? `Products in ${category} — ${data.top_products.length} products` : `All Products in Range — ${data.top_products.length} products`}</h3>
                 <button onClick={() => setShowAll(!showAll)} className="text-primary text-sm font-medium">
                   {showAll ? 'Show Top 10' : `Show All (${data.top_products.length})`}
                 </button>
