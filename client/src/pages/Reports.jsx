@@ -116,7 +116,7 @@ function Reports() {
         {/* Report content */}
         <div className="flex-1">
           {activeTab === 'product' ? (
-            <ProductReport start={start} end={end} />
+            <ProductReport start={start} end={end} onDatesChange={(s, e) => { setStart(s); setEnd(e); }} />
           ) : !data ? (
             <p className="text-on-surface-variant text-sm">Loading...</p>
           ) : (
@@ -334,7 +334,7 @@ function UtangReport({ data }) {
   );
 }
 
-function ProductReport({ start, end }) {
+function ProductReport({ start, end, onDatesChange }) {
   const [products, setProducts] = useState([]);
   const [category, setCategory] = useState('');
   const [granularity, setGranularity] = useState('day');
@@ -348,6 +348,29 @@ function ProductReport({ start, end }) {
   }, []);
 
   const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort();
+
+  const handleGranularityChange = (newGran) => {
+    setGranularity(newGran);
+    // Auto-adjust top date range to match granularity — day=today, week=current week, month=current month
+    const t = new Date();
+    const iso = (d) => d.toISOString().slice(0, 10);
+    if (newGran === 'day') {
+      const d = iso(t);
+      onDatesChange(d, d);
+    } else if (newGran === 'week') {
+      const day = t.getDay(); // 0 Sun - 6 Sat
+      const diffToMonday = day === 0 ? -6 : 1 - day;
+      const monday = new Date(t);
+      monday.setDate(t.getDate() + diffToMonday);
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      onDatesChange(iso(monday), iso(sunday));
+    } else if (newGran === 'month') {
+      const first = new Date(t.getFullYear(), t.getMonth(), 1);
+      const last = new Date(t.getFullYear(), t.getMonth() + 1, 0);
+      onDatesChange(iso(first), iso(last));
+    }
+  };
 
   const [error, setError] = useState(null);
   const load = () => {
@@ -391,7 +414,7 @@ function ProductReport({ start, end }) {
           </div>
           <div>
             <label className="text-xs text-on-surface-variant">Granularity</label>
-            <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
+            <select value={granularity} onChange={(e) => handleGranularityChange(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
               <option value="day">Day</option>
               <option value="week">Week</option>
               <option value="month">Month</option>
