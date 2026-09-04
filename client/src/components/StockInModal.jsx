@@ -35,9 +35,20 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
     if (actualPieces <= 0) return;
     try {
       setSaving(true);
+      // New Cost Price is entered per pack — convert to per-piece before saving,
+      // since cost_price is stored per piece/stick (e.g. ₱145/pack ÷ 20 = ₱7.25/stick).
+      let costPerPiece = null;
+      if (newCostPrice) {
+        const packPrice = Number(newCostPrice);
+        if (selectedProduct?.units_per_pack) {
+          costPerPiece = Math.round((packPrice / selectedProduct.units_per_pack) * 10000) / 10000;
+        } else {
+          costPerPiece = packPrice;
+        }
+      }
       await onSave(productId, {
         quantity: actualPieces,
-        cost_price: newCostPrice ? Number(newCostPrice) : null,
+        cost_price: costPerPiece,
       });
       // Stay in modal for next restock — just clear inputs
       setProductId('');
@@ -51,10 +62,14 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
     }
   };
 
-  const filteredProducts = products.filter((p) =>
-    p.name.toLowerCase().includes(search.toLowerCase()) ||
-    (p.category || '').toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredProducts = products.filter((p) => {
+    const q = search.toLowerCase();
+    return (
+      p.name.toLowerCase().includes(q) ||
+      (p.sku || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q)
+    );
+  });
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
@@ -67,7 +82,7 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search product..."
+              placeholder="Search product, SKU..."
               className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 mb-2"
             />
             <select
@@ -80,7 +95,7 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
               <option value="">Select product...</option>
               {filteredProducts.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name} (currently {p.stock_quantity} in stock)
+                  {p.name}{p.sku ? ` [${p.sku}]` : ''} (currently {p.stock_quantity} in stock)
                 </option>
               ))}
             </select>
@@ -152,18 +167,37 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
 
           <div>
             <label className="text-sm font-medium text-on-surface-variant">
-              New Cost Price (₱) — optional
+              {selectedProduct?.units_per_pack
+                ? `New Cost Price per Pack (₱) — optional`
+                : `New Cost Price (₱) — optional`}
             </label>
             <input
               type="number"
               step="0.01"
+              min="0"
               value={newCostPrice}
               onChange={(e) => setNewCostPrice(e.target.value)}
-              placeholder={selectedProduct ? `Current: ₱${selectedProduct.cost_price}` : '0.00'}
+              placeholder={
+                selectedProduct
+                  ? selectedProduct.units_per_pack
+                    ? `Current: ₱${(Number(selectedProduct.cost_price) * selectedProduct.units_per_pack).toFixed(2)}/pack (₱${selectedProduct.cost_price}/${selectedProduct.unit_label || 'pc'})`
+                    : `Current: ₱${selectedProduct.cost_price}`
+                  : '0.00'
+              }
               className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
             />
             <p className="text-xs text-on-surface-variant mt-1">
-              Leave blank to keep the current cost price.
+              {selectedProduct?.units_per_pack ? (
+                newCostPrice ? (
+                  <>
+                    = ₱{(Number(newCostPrice) / selectedProduct.units_per_pack).toFixed(2)} per {selectedProduct.unit_label || 'pc'} ({selectedProduct.units_per_pack} per pack). Saved as cost per {selectedProduct.unit_label || 'pc'}.
+                  </>
+                ) : (
+                  <>Enter the price per pack (e.g. Camel ₱145/pack = ₱7.25/stick). Leave blank to keep the current cost price.</>
+                )
+              ) : (
+                <>Leave blank to keep the current cost price.</>
+              )}
             </p>
           </div>
 
