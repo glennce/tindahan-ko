@@ -41,6 +41,8 @@ function Inventory() {
   const [auditSummary, setAuditSummary] = useState(null);
   const [auditForm, setAuditForm] = useState({ product_id: '', counted_qty: '', reason: 'unrecorded_sale', notes: '' });
   const [auditSearch, setAuditSearch] = useState('');
+  const [auditProductSearch, setAuditProductSearch] = useState('');
+  const [auditProductCategory, setAuditProductCategory] = useState('All');
 
   const fetchProducts = () => {
     setLoading(true);
@@ -188,6 +190,15 @@ function Inventory() {
   const filteredAudits = adjustments.filter((a) =>
     !auditSearch || (a.product_name || '').toLowerCase().includes(auditSearch.toLowerCase()) || (a.reason || '').toLowerCase().includes(auditSearch.toLowerCase())
   );
+  const auditProductOptions = products.filter((p) => {
+    const q = auditProductSearch.trim().toLowerCase();
+    const matchesSearch = !q ||
+      p.name.toLowerCase().includes(q) ||
+      (p.sku || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q);
+    const matchesCategory = auditProductCategory === 'All' || p.category === auditProductCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   return (
     <div>
@@ -302,13 +313,56 @@ function Inventory() {
             <h2 className="font-semibold text-on-surface mb-3">Record a physical count</h2>
             <form onSubmit={handleAuditSave} className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <div className="lg:col-span-2">
-                <label className="text-sm text-on-surface-variant">Product</label>
+                <label className="text-sm text-on-surface-variant">Find product to audit</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1 mb-2">
+                  <input
+                    type="text"
+                    placeholder="Search name, SKU, or category..."
+                    value={auditProductSearch}
+                    onChange={(e) => {
+                      const q = e.target.value;
+                      setAuditProductSearch(q);
+                      setAuditForm((f) => {
+                        if (!f.product_id) return f;
+                        const stillThere = products.some((p) =>
+                          String(p.id) === String(f.product_id) &&
+                          (p.name.toLowerCase().includes(q.trim().toLowerCase()) ||
+                            (p.sku || '').toLowerCase().includes(q.trim().toLowerCase()) ||
+                            (p.category || '').toLowerCase().includes(q.trim().toLowerCase())) &&
+                          (auditProductCategory === 'All' || p.category === auditProductCategory)
+                        );
+                        return stillThere ? f : { ...f, product_id: '' };
+                      });
+                    }}
+                    className="border border-outline-variant rounded-lg px-3 py-2 text-sm"
+                  />
+                  <select value={auditProductCategory} onChange={(e) => {
+                    const c = e.target.value;
+                    setAuditProductCategory(c);
+                    setAuditForm((f) => {
+                      if (!f.product_id) return f;
+                      const stillThere = products.some((p) =>
+                        String(p.id) === String(f.product_id) &&
+                        (c === 'All' || p.category === c)
+                      );
+                      return stillThere ? f : { ...f, product_id: '' };
+                    });
+                  }} className="border border-outline-variant rounded-lg px-3 py-2 text-sm">
+                    {categories.map((c) => (
+                      <option key={c} value={c}>{c === 'All' ? 'All categories' : c}</option>
+                    ))}
+                  </select>
+                </div>
+                <label className="text-sm text-on-surface-variant">Product ({auditProductOptions.length} found)</label>
                 <select value={auditForm.product_id} onChange={(e) => setAuditForm((f) => ({ ...f, product_id: e.target.value }))} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
                   <option value="">Select product...</option>
-                  {products.map((p) => (
+                  {auditProductOptions.map((p) => (
                     <option key={p.id} value={p.id}>{p.name} — system: {p.stock_quantity}</option>
                   ))}
                 </select>
+                {auditProductOptions.length === 0 && (
+                  <p className="text-xs text-on-surface-variant mt-1">No products match — clear the search or pick another category.</p>
+                )}
               </div>
               <div>
                 <label className="text-sm text-on-surface-variant">System stock</label>
