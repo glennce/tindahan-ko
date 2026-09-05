@@ -76,6 +76,29 @@ async function ensureDB() {
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS discount_amount NUMERIC DEFAULT 0`);
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'owner'`);
+    // Cash drawer breakdown persistence (for history details: debt from credit, GCash paid)
+    await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS cash_sales NUMERIC DEFAULT 0`);
+    await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS cash_utang_payments NUMERIC DEFAULT 0`);
+    await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS gcash_utang_payments NUMERIC DEFAULT 0`);
+    await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS cash_expenses NUMERIC DEFAULT 0`);
+    await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS gcash_expenses NUMERIC DEFAULT 0`);
+    await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS expected_gcash NUMERIC DEFAULT 0`);
+    // Stock audit / shrinkage tracking (sold-but-unrecorded, theft, damage, etc.)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS stock_adjustments (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        product_name TEXT NOT NULL,
+        system_qty NUMERIC NOT NULL,
+        counted_qty NUMERIC NOT NULL,
+        difference NUMERIC NOT NULL,
+        reason VARCHAR(40) NOT NULL DEFAULT 'unrecorded_sale',
+        notes TEXT,
+        cost_impact NUMERIC DEFAULT 0,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
   } catch (e) {
     console.error('ensureDB error', e.message);
   }
@@ -1254,6 +1277,88 @@ app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (
   }
 });
 
+// --- Stock audit / shrinkage ---
+// Record a physical count. System stock is corrected to counted_qty and the
+// variance is logged with a reason (unrecorded sale, theft, damaged, ...).
+app.get('/api/stock-adjustments', requireAuth, requireRole('owner'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT sa.*, u.name AS created_by_name FROM stock_adjustments sa
+       LEFT JOIN users u ON u.id = sa.created_by
+       ORDER BY sa.created_at DESC LIMIT 100`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load stock adjustments' });
+  }
+});
+
+app.get('/api/stock-adjustments/summary', requireAuth, requireRole('owner'), async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT
+        COUNT(*) AS total_counts,
+        COUNT(*) FILTER (WHERE difference < 0) AS shortage_counts,
+        COUNT(*) FILTER (WHERE difference > 0) AS overage_counts,
+        COALESCE(SUM(cost_impact) FILTER (WHERE difference < 0), 0) AS shortage_value,
+        COALESCE(SUM(ABS(difference)) FILTER (WHERE reason = 'unrecorded_sale'), 0) AS unrecorded_units,
+        COALESCE(SUM(cost_impact) FILTER (WHERE reason = 'unrecorded_sale'), 0) AS unrecorded_value,
+        COALESCE(SUM(cost_impact) FILTER (WHERE reason = 'theft'), 0) AS theft_value
+      FROM stock_adjustments
+      WHERE created_at >= NOW() - INTERVAL '30 days'
+    `);
+    const row = r.rows[0];
+    res.json({
+      total_counts: Number(row.total_counts),
+      shortage_counts: Number(row.shortage_counts),
+      overage_counts: Number(row.overage_counts),
+      shortage_value: Number(row.shortage_value),
+      unrecorded_units: Number(row.unrecorded_units),
+      unrecorded_value: Number(row.unrecorded_value),
+      theft_value: Number(row.theft_value),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load audit summary' });
+  }
+});
+
+app.post('/api/stock-adjustments', requireAuth, requireRole('owner'), async (req, res) => {
+  const { product_id, counted_qty, reason, notes } = req.body;
+  const validReasons = ['unrecorded_sale', 'theft', 'damaged', 'expired', 'miscount_correction', 'supplier_shortage', 'return_correction', 'other'];
+  const useReason = validReasons.includes(reason) ? reason : 'unrecorded_sale';
+  const counted = Number(counted_qty);
+  if (!product_id) return res.status(400).json({ error: 'Product is required' });
+  if (!Number.isFinite(counted) || counted < 0) {
+    return res.status(400).json({ error: 'Counted quantity must be 0 or more' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const prod = await client.query('SELECT * FROM products WHERE id = $1 FOR UPDATE', [product_id]);
+    if (prod.rows.length === 0) throw new Error('Product not found');
+    const p = prod.rows[0];
+    const systemQty = Number(p.stock_quantity);
+    const diff = counted - systemQty;
+    if (diff === 0) throw new Error('No variance — counted matches system stock.');
+    const costImpact = diff * Number(p.cost_price || 0);
+    await client.query('UPDATE products SET stock_quantity = $1 WHERE id = $2', [counted, product_id]);
+    const log = await client.query(
+      `INSERT INTO stock_adjustments (product_id, product_name, system_qty, counted_qty, difference, reason, notes, cost_impact, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [product_id, p.name, systemQty, counted, diff, useReason, notes || null, costImpact, req.user.id]
+    );
+    await client.query('COMMIT');
+    res.status(201).json(log.rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message || 'Failed to save audit' });
+  } finally {
+    client.release();
+  }
+});
+
 async function computeExpectedCash(openingCash, startTime, endTime, client = pool) {
   const cashSales = await client.query(
     `SELECT COALESCE(SUM(
@@ -1381,8 +1486,12 @@ async function freezeStaleShifts() {
     const { start, end } = manilaDayBounds(dateStr);
     const running = await computeExpectedCash(shift.opening_cash || 0, start, end);
     await pool.query(
-      `UPDATE cash_shifts SET status = 'pending_count', expected_cash = $1, gcash_sales = $2, utang_charged = $3 WHERE id = $4`,
-      [running.expected_cash, running.gcash_sales, running.utang_charged, shift.id]
+      `UPDATE cash_shifts SET status = 'pending_count', expected_cash = $1, gcash_sales = $2, utang_charged = $3,
+        cash_sales = $4, cash_utang_payments = $5, gcash_utang_payments = $6,
+        cash_expenses = $7, gcash_expenses = $8, expected_gcash = $9 WHERE id = $10`,
+      [running.expected_cash, running.gcash_sales, running.utang_charged,
+       running.cash_sales, running.cash_utang_payments, running.gcash_utang_payments,
+       running.cash_expenses, running.gcash_expenses, running.expected_gcash, shift.id]
     );
   }
 }
@@ -1435,19 +1544,25 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       SELECT COALESCE(SUM(amount),0) AS total FROM expenses
       WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
     `);
-    // For total cash in hand, use actual counted cash (latest closed), fallback to computed net if none — same for GCash
+    // Total cash in hand must ACCUMULATE across days (yesterday 2004 + today 2400 = 4404),
+    // not reset to the latest day. Each day's net added cash = closing - opening
+    // (works whether opening is 0 or carried over from the previous close).
     const closedActualRes = await pool.query(`
-      SELECT closing_cash, closed_at FROM cash_shifts WHERE status='closed' ORDER BY closed_at DESC LIMIT 1
+      SELECT COUNT(*) AS closed_days,
+             COALESCE(SUM(closing_cash - COALESCE(opening_cash, 0)), 0) AS cumulative_net,
+             MAX(closed_at) AS last_closed_at
+      FROM cash_shifts WHERE status='closed' AND closing_cash IS NOT NULL
     `);
-    const hasClosedActual = closedActualRes.rows.length > 0 && closedActualRes.rows[0].closing_cash !== null;
-    let closedTotalCash = hasClosedActual ? Number(closedActualRes.rows[0].closing_cash) : (Number(closedCashSales.rows[0].total) + Number(closedCashPayments.rows[0].total) - Number(closedCashExpenses.rows[0].total));
+    const closedDays = Number(closedActualRes.rows[0].closed_days || 0);
+    const hasClosedActual = closedDays > 0;
+    let closedTotalCash = hasClosedActual ? Number(closedActualRes.rows[0].cumulative_net) : (Number(closedCashSales.rows[0].total) + Number(closedCashPayments.rows[0].total) - Number(closedCashExpenses.rows[0].total));
     let closedTotalGcash = Number(closedGcashSales.rows[0].total) + Number(closedGcashPayments.rows[0].total) - Number(closedGcashExpenses.rows[0].total);
     let closedCashExpDisplay = Number(closedCashExpenses.rows[0].total);
     let closedGcashExpDisplay = Number(closedGcashExpenses.rows[0].total);
 
     // Deduct expenses that happened AFTER the last counted time from previous sale (user wants expense to reduce previous sale, not today's pending sales)
     if (hasClosedActual) {
-      const lastClosedAt = closedActualRes.rows[0].closed_at;
+      const lastClosedAt = closedActualRes.rows[0].last_closed_at;
       const lastClosedDateStr = new Date(lastClosedAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
       const isTodayClosed = lastClosedDateStr === today;
       // Cash: deduct ALL post expenses (latest closing is actual, not sum, so remainder + today all deduct)
@@ -1503,6 +1618,7 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       gcash_expenses: closedGcashExpDisplay,
       total_cash: closedTotalCash,
       total_gcash: closedTotalGcash,
+      closed_days: closedDays,
     };
 
     res.json({ shift, running, pending: pending.rows, closed });
@@ -1545,24 +1661,40 @@ app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
     const shift = shiftResult.rows[0];
     if (shift.status === 'closed') return res.status(400).json({ error: 'Shift already closed' });
 
-    let { expected_cash: expected, gcash_sales: gcash, utang_charged: utangCharged } = shift;
-
+    const dateStr = shift.shift_date.toISOString().slice(0, 10);
+    let breakdown;
     if (shift.status === 'active') {
-      const dateStr = shift.shift_date.toISOString().slice(0, 10);
       const { start } = manilaDayBounds(dateStr);
-      const running = await computeExpectedCash(shift.opening_cash || 0, start, new Date());
-      expected = running.expected_cash;
-      gcash = running.gcash_sales;
-      utangCharged = running.utang_charged;
+      breakdown = await computeExpectedCash(shift.opening_cash || 0, start, new Date());
+    } else {
+      // pending_count: prefer frozen values, backfill missing pieces from full-day recompute
+      const { start, end } = manilaDayBounds(dateStr);
+      const full = await computeExpectedCash(shift.opening_cash || 0, start, end);
+      breakdown = {
+        expected_cash: shift.expected_cash ?? full.expected_cash,
+        gcash_sales: shift.gcash_sales ?? full.gcash_sales,
+        utang_charged: shift.utang_charged ?? full.utang_charged,
+        cash_sales: shift.cash_sales ?? full.cash_sales,
+        cash_utang_payments: shift.cash_utang_payments ?? full.cash_utang_payments,
+        gcash_utang_payments: shift.gcash_utang_payments ?? full.gcash_utang_payments,
+        cash_expenses: shift.cash_expenses ?? full.cash_expenses,
+        gcash_expenses: shift.gcash_expenses ?? full.gcash_expenses,
+        expected_gcash: shift.expected_gcash ?? full.expected_gcash,
+      };
     }
 
-    const difference = Number(closing_cash) - Number(expected);
+    const difference = Number(closing_cash) - Number(breakdown.expected_cash);
     const result = await pool.query(
       `UPDATE cash_shifts
        SET closed_by = $1, closing_cash = $2, expected_cash = $3, difference = $4,
-           gcash_sales = $5, utang_charged = $6, status = 'closed', closed_at = NOW(), notes = $7
-       WHERE id = $8 RETURNING *`,
-      [req.user.id, closing_cash, expected, difference, gcash, utangCharged, notes || null, shift.id]
+           gcash_sales = $5, utang_charged = $6, status = 'closed', closed_at = NOW(), notes = $7,
+           cash_sales = $8, cash_utang_payments = $9, gcash_utang_payments = $10,
+           cash_expenses = $11, gcash_expenses = $12, expected_gcash = $13
+       WHERE id = $14 RETURNING *`,
+      [req.user.id, closing_cash, breakdown.expected_cash, difference,
+       breakdown.gcash_sales, breakdown.utang_charged, notes || null,
+       breakdown.cash_sales, breakdown.cash_utang_payments, breakdown.gcash_utang_payments,
+       breakdown.cash_expenses, breakdown.gcash_expenses, breakdown.expected_gcash, shift.id]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -1571,18 +1703,60 @@ app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
   }
 });
 
+// Enrich a closed shift with full-day breakdown (debt from credit + GCash paid).
+// Uses stored snapshot when present, otherwise recomputes from sales/utang/expenses.
+async function enrichShiftRow(shift) {
+  const needsCompute =
+    shift.cash_sales == null || shift.cash_utang_payments == null ||
+    shift.gcash_utang_payments == null || shift.cash_expenses == null ||
+    shift.gcash_expenses == null || shift.expected_gcash == null;
+  if (!needsCompute) {
+    const gcashReceived = Number(shift.gcash_sales || 0) + Number(shift.gcash_utang_payments || 0);
+    return {
+      ...shift,
+      gcash_received: gcashReceived,
+      gcash_in_hand: gcashReceived - Number(shift.gcash_expenses || 0),
+    };
+  }
+  try {
+    const dateStr = new Date(shift.shift_date).toISOString().slice(0, 10);
+    const { start, end } = manilaDayBounds(dateStr);
+    const full = await computeExpectedCash(shift.opening_cash || 0, start, end);
+    const gcashReceived = full.gcash_sales + full.gcash_utang_payments;
+    return {
+      ...shift,
+      cash_sales: shift.cash_sales ?? full.cash_sales,
+      cash_utang_payments: shift.cash_utang_payments ?? full.cash_utang_payments,
+      gcash_sales: shift.gcash_sales ?? full.gcash_sales,
+      gcash_utang_payments: shift.gcash_utang_payments ?? full.gcash_utang_payments,
+      utang_charged: shift.utang_charged ?? full.utang_charged,
+      cash_expenses: shift.cash_expenses ?? full.cash_expenses,
+      gcash_expenses: shift.gcash_expenses ?? full.gcash_expenses,
+      expected_gcash: shift.expected_gcash ?? full.expected_gcash,
+      gcash_received: gcashReceived,
+      gcash_in_hand: gcashReceived - (Number(shift.gcash_expenses ?? full.gcash_expenses)),
+    };
+  } catch {
+    return shift;
+  }
+}
+
 app.get('/api/shift/history', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT cs.*, u1.name AS opened_by_name, u2.name AS closed_by_name
        FROM cash_shifts cs
-       JOIN users u1 ON u1.id = cs.opened_by
+       LEFT JOIN users u1 ON u1.id = cs.opened_by
        LEFT JOIN users u2 ON u2.id = cs.closed_by
        WHERE cs.status = 'closed'
        ORDER BY cs.closed_at DESC
        LIMIT 30`
     );
-    res.json(result.rows);
+    const enriched = [];
+    for (const row of result.rows) {
+      enriched.push(await enrichShiftRow(row));
+    }
+    res.json(enriched);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load shift history' });
@@ -1594,13 +1768,13 @@ app.get('/api/shift/:id', requireAuth, async (req, res) => {
     const result = await pool.query(
       `SELECT cs.*, u1.name AS opened_by_name, u2.name AS closed_by_name
        FROM cash_shifts cs
-       JOIN users u1 ON u1.id = cs.opened_by
+       LEFT JOIN users u1 ON u1.id = cs.opened_by
        LEFT JOIN users u2 ON u2.id = cs.closed_by
        WHERE cs.id = $1`,
       [req.params.id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Shift not found' });
-    res.json(result.rows[0]);
+    res.json(await enrichShiftRow(result.rows[0]));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load shift detail' });

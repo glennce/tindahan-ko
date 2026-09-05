@@ -202,13 +202,20 @@ export default function Shift() {
     : running.expected_cash;
 
   const isClosed = shift.status === 'closed';
-  const closedData = closed || { total_cash: 0, total_gcash: 0, cash_sales: 0, gcash_sales: 0, cash_utang_payments: 0, gcash_utang_payments: 0, cash_expenses: 0, gcash_expenses: 0 };
+  const closedData = closed || { total_cash: 0, total_gcash: 0, cash_sales: 0, gcash_sales: 0, cash_utang_payments: 0, gcash_utang_payments: 0, cash_expenses: 0, gcash_expenses: 0, closed_days: 0 };
   const totalCash = Number(closedData.total_cash ?? 0);
   const totalGcash = Number(closedData.total_gcash ?? 0);
+  const closedDays = Number(closedData.closed_days ?? 0);
   const cashExpenses = running.cash_expenses ?? 0;
   const gcashExpenses = running.gcash_expenses ?? 0;
   const todayCashPending = Number(shift?.opening_cash || 0) + Number(running.cash_sales ?? 0) + Number(running.cash_utang_payments ?? 0);
   const todayGcashPending = Number(running.gcash_sales ?? 0) + Number(running.gcash_utang_payments ?? 0);
+  // Net added today (excludes opening to avoid double-counting when opening is carried over).
+  // Cumulative total after count = counted total + today's net.
+  const todayCashNet = Number(running.cash_sales ?? 0) + Number(running.cash_utang_payments ?? 0);
+  const todayGcashNet = Number(running.gcash_sales ?? 0) + Number(running.gcash_utang_payments ?? 0);
+  const projectedCash = isClosed ? totalCash : totalCash + todayCashNet;
+  const projectedGcash = isClosed ? totalGcash : totalGcash + todayGcashNet;
 
   return (
     <div>
@@ -222,10 +229,11 @@ export default function Shift() {
             <Wallet className="text-on-primary" size={22} />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total Cash in Hand — Counted</p>
+            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total Cash in Hand — Counted{closedDays > 0 ? ` (${closedDays} day${closedDays === 1 ? '' : 's'} cumulative)` : ''}</p>
             <p className="text-2xl font-bold text-on-surface">₱{Number(totalCash).toFixed(2)}</p>
-            <p className="text-xs text-secondary truncate">Today pending: ₱{Number(todayCashPending).toFixed(2)} → added after count</p>
-            {isClosed && <p className="text-xs text-on-surface-variant truncate">Today closed: counted ₱{Number(shift.closing_cash).toFixed(2)} · Expected ₱{Number(shift.expected_cash).toFixed(2)}</p>}
+            {!isClosed
+              ? <p className="text-xs text-secondary truncate">Today net +₱{Number(todayCashNet).toFixed(2)} → ₱{Number(projectedCash).toFixed(2)} after count</p>
+              : <p className="text-xs text-on-surface-variant truncate">Today closed: counted ₱{Number(shift.closing_cash).toFixed(2)} · Expected ₱{Number(shift.expected_cash).toFixed(2)}</p>}
           </div>
         </div>
         <div className="bg-surface border border-outline-variant rounded-xl p-4 flex items-center gap-4">
@@ -233,10 +241,10 @@ export default function Shift() {
             <Smartphone className="text-secondary" size={22} />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total GCash — Counted</p>
+            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total GCash — Counted{closedDays > 0 ? ` (${closedDays} day${closedDays === 1 ? '' : 's'} cumulative)` : ''}</p>
             <p className="text-2xl font-bold text-on-surface">₱{Number(totalGcash).toFixed(2)}</p>
             <p className="text-xs text-on-surface-variant truncate">Counted · Sales ₱{Number(closedData.gcash_sales ?? 0).toFixed(2)} - Expenses ₱{Number(closedData.gcash_expenses ?? 0).toFixed(2)}</p>
-            <p className="text-xs text-secondary truncate">Today pending GCash sales: ₱{Number(todayGcashPending).toFixed(2)} → added after count</p>
+            {!isClosed && <p className="text-xs text-secondary truncate">Today net +₱{Number(todayGcashNet).toFixed(2)} → ₱{Number(projectedGcash).toFixed(2)} after count</p>}
           </div>
         </div>
       </div>
@@ -495,23 +503,53 @@ export default function Shift() {
 
           {activeTab === 'history' && (
             <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
-              <div className="p-4 border-b border-outline-variant"><h2 className="font-semibold text-on-surface">Shift History</h2></div>
+              <div className="p-4 border-b border-outline-variant flex justify-between items-center">
+                <div>
+                  <h2 className="font-semibold text-on-surface">Shift History</h2>
+                  <p className="text-xs text-on-surface-variant">Includes debt from credit (utang charged) & GCash received per day.</p>
+                </div>
+                <button
+                  onClick={() => {
+                    const rows = [['Date', 'Opening', 'Cash Counted', 'Difference', 'Debt from Credit (Utang)', 'GCash Sales', 'GCash Utang Payments', 'GCash Received', 'Cash Expenses', 'GCash Expenses'],
+                      ...history.map((s) => {
+                        const gcashSales = Number(s.gcash_sales ?? 0);
+                        const gcashPay = Number(s.gcash_utang_payments ?? 0);
+                        return [new Date(s.shift_date).toLocaleDateString(), s.opening_cash, s.closing_cash, s.difference, Number(s.utang_charged ?? 0).toFixed(2), gcashSales.toFixed(2), gcashPay.toFixed(2), (gcashSales + gcashPay).toFixed(2), Number(s.cash_expenses ?? 0).toFixed(2), Number(s.gcash_expenses ?? 0).toFixed(2)];
+                      })];
+                    downloadCsv(`shift-history-${new Date().toISOString().slice(0, 10)}.csv`, rows);
+                  }}
+                  className="border border-outline-variant text-primary text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1"
+                >
+                  <Download size={16} /> Export CSV
+                </button>
+              </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm min-w-[600px]">
+                <table className="w-full text-left text-sm min-w-[900px]">
                   <thead className="bg-surface-container-low text-on-surface-variant">
-                    <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Opening</th><th className="px-4 py-3">Closing</th><th className="px-4 py-3">Difference</th><th className="px-4 py-3 text-right">Actions</th></tr>
+                    <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Opening</th><th className="px-4 py-3">Cash Counted</th><th className="px-4 py-3">Diff</th><th className="px-4 py-3">Debt (Utang)</th><th className="px-4 py-3">GCash Received</th><th className="px-4 py-3 text-right">Details</th></tr>
                   </thead>
                   <tbody>
-                    {history.map((s) => (
+                    {history.map((s) => {
+                      const gcashReceived = Number(s.gcash_received ?? (Number(s.gcash_sales ?? 0) + Number(s.gcash_utang_payments ?? 0)));
+                      return (
                       <tr key={s.id} className="border-t border-outline-variant">
-                        <td className="px-4 py-3 text-on-surface-variant">{new Date(s.shift_date).toLocaleDateString()}</td>
+                        <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">{new Date(s.shift_date).toLocaleDateString()}
+                          <span className="block text-xs">Cash exp ₱{Number(s.cash_expenses ?? 0).toFixed(2)} · GCash exp ₱{Number(s.gcash_expenses ?? 0).toFixed(2)}</span>
+                        </td>
                         <td className="px-4 py-3 text-on-surface">₱{Number(s.opening_cash).toFixed(2)}</td>
                         <td className="px-4 py-3 text-on-surface">₱{Number(s.closing_cash).toFixed(2)}</td>
                         <td className={`px-4 py-3 font-medium ${Number(s.difference) === 0 ? 'text-secondary' : 'text-error'}`}>₱{Number(s.difference).toFixed(2)}</td>
+                        <td className="px-4 py-3 text-error font-medium">₱{Number(s.utang_charged ?? 0).toFixed(2)}
+                          <span className="block text-xs font-normal text-on-surface-variant">credit given</span>
+                        </td>
+                        <td className="px-4 py-3 text-secondary font-medium">₱{gcashReceived.toFixed(2)}
+                          <span className="block text-xs font-normal text-on-surface-variant">sales ₱{Number(s.gcash_sales ?? 0).toFixed(2)} + payments ₱{Number(s.gcash_utang_payments ?? 0).toFixed(2)}</span>
+                        </td>
                         <td className="px-4 py-3 text-right"><button onClick={() => viewShiftDetail(s.id)} className="p-1.5 text-primary hover:bg-primary-container hover:text-on-primary rounded-md"><Eye size={18} /></button></td>
                       </tr>
-                    ))}
-                    {history.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-on-surface-variant">No shifts closed yet.</td></tr>}
+                      );
+                    })}
+                    {history.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-on-surface-variant">No shifts closed yet.</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -547,15 +585,28 @@ export default function Shift() {
               <button onClick={() => setSelectedShift(null)} className="text-on-surface-variant text-xl">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-2 text-sm">
-              <p className="text-on-surface-variant mb-2">{new Date(selectedShift.shift_date).toLocaleDateString()}</p>
+              <p className="text-on-surface-variant mb-2">{new Date(selectedShift.shift_date).toLocaleDateString()} · closed {selectedShift.closed_at ? new Date(selectedShift.closed_at).toLocaleString() : ''}</p>
               <div className="flex justify-between text-on-surface-variant"><span>Starting Cash</span><span>₱{Number(selectedShift.opening_cash).toFixed(2)}</span></div>
+              <div className="flex justify-between text-on-surface-variant"><span>Cash Sales</span><span>+₱{Number(selectedShift.cash_sales ?? 0).toFixed(2)}</span></div>
+              <div className="flex justify-between text-on-surface-variant"><span>Credit Payments (Cash)</span><span>+₱{Number(selectedShift.cash_utang_payments ?? 0).toFixed(2)}</span></div>
+              <div className="flex justify-between text-on-surface-variant"><span>Cash Expenses</span><span className="text-error">-₱{Number(selectedShift.cash_expenses ?? 0).toFixed(2)}</span></div>
               <div className="flex justify-between font-bold text-on-surface"><span>Expected Cash</span><span>₱{Number(selectedShift.expected_cash).toFixed(2)}</span></div>
               <div className="flex justify-between font-bold text-on-surface"><span>Actual Cash Counted</span><span>₱{Number(selectedShift.closing_cash).toFixed(2)}</span></div>
               <div className={`flex justify-between font-bold ${Number(selectedShift.difference) === 0 ? 'text-secondary' : 'text-error'}`}><span>Difference</span><span>₱{Number(selectedShift.difference).toFixed(2)}</span></div>
               <div className="pt-2 border-t border-outline-variant space-y-2">
-                <p className="text-xs text-on-surface-variant">For reference only</p>
-                <div className="flex justify-between text-on-surface-variant"><span>GCash Sales</span><span>₱{Number(selectedShift.gcash_sales).toFixed(2)}</span></div>
-                <div className="flex justify-between text-on-surface-variant"><span>New Utang Charged</span><span>₱{Number(selectedShift.utang_charged).toFixed(2)}</span></div>
+                <p className="text-xs font-semibold text-on-surface">Debt from credit (utang)</p>
+                <div className="flex justify-between text-error font-medium"><span>New credit given that day</span><span>₱{Number(selectedShift.utang_charged ?? 0).toFixed(2)}</span></div>
+                <p className="text-xs text-on-surface-variant">Not cash in hand — collect via Utang payments.</p>
+              </div>
+              <div className="pt-2 border-t border-outline-variant space-y-2">
+                <p className="text-xs font-semibold text-on-surface">Paid using GCash</p>
+                <div className="flex justify-between text-on-surface-variant"><span>GCash Sales</span><span>+₱{Number(selectedShift.gcash_sales ?? 0).toFixed(2)}</span></div>
+                <div className="flex justify-between text-on-surface-variant"><span>Credit Payments (GCash)</span><span>+₱{Number(selectedShift.gcash_utang_payments ?? 0).toFixed(2)}</span></div>
+                <div className="flex justify-between text-on-surface-variant"><span>GCash Expenses</span><span className="text-error">-₱{Number(selectedShift.gcash_expenses ?? 0).toFixed(2)}</span></div>
+                <div className="flex justify-between font-bold text-on-surface"><span>GCash Received (net of expenses)</span><span>₱{Number(selectedShift.gcash_in_hand ?? ((Number(selectedShift.gcash_sales ?? 0) + Number(selectedShift.gcash_utang_payments ?? 0)) - Number(selectedShift.gcash_expenses ?? 0))).toFixed(2)}</span></div>
+                {(selectedShift.expected_gcash !== undefined && selectedShift.expected_gcash !== null) && (
+                  <div className="flex justify-between text-on-surface-variant text-xs"><span>Expected GCash (before expenses)</span><span>₱{Number(selectedShift.expected_gcash).toFixed(2)}</span></div>
+                )}
               </div>
               {selectedShift.notes && <div className="pt-2 border-t border-outline-variant"><p className="text-xs text-on-surface-variant mb-1">Notes</p><p className="text-on-surface">{selectedShift.notes}</p></div>}
             </div>
