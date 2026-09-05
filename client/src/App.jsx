@@ -33,7 +33,6 @@ function App() {
         <Route path="transactions" element={<OwnerRoute><Transactions /></OwnerRoute>} />
         <Route path="reports" element={<OwnerRoute><Reports /></OwnerRoute>} />
         <Route path="more" element={<More />} />
-        <Route path="customers" element={<Customers />} />
         <Route path="shift" element={<Shift />} />
       </Route>
     </Routes>

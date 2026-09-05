@@ -63,7 +63,7 @@ export default function Shift() {
   const [expenseForm, setExpenseForm] = useState({ category: 'Store Supplies', amount: '', description: '', payment_method: 'cash' });
   const [reportStart, setReportStart] = useState(firstOfMonth());
   const [reportEnd, setReportEnd] = useState(today());
-  const [reportData, setReportData] = useState(null);
+  const [reportData, setReportData] = useState(undefined);
   const [transfers, setTransfers] = useState([]);
   const [transferForm, setTransferForm] = useState({ from_wallet: 'cash', to_wallet: 'gcash', amount: '', note: '' });
   const { showToast } = useToast();
@@ -75,7 +75,14 @@ export default function Shift() {
     apiFetch('/shift/history').then((res) => res.json()).then(setHistory);
   };
   const loadReport = () => {
-    apiFetch(`/reports/expenses?start=${reportStart}&end=${reportEnd}`).then((res) => res.json()).then(setReportData);
+    apiFetch(`/reports/expenses?start=${reportStart}&end=${reportEnd}`)
+      .then(async (res) => {
+        const json = await res.json();
+        // Owner-only endpoint: cashiers get 403 — don't store the error shape or the expense cards crash
+        if (res.ok && json && typeof json.total_expenses !== 'undefined') setReportData(json);
+        else setReportData(null);
+      })
+      .catch(() => setReportData(null));
   };
   const loadTransfers = () => {
     apiFetch('/transfers').then((res) => res.json()).then(setTransfers).catch(() => {});
@@ -185,7 +192,7 @@ export default function Shift() {
   };
 
   const handleExport = () => {
-    if (!reportData) return;
+    if (!reportData || !reportData.recent) return;
     const rows = [['Date', 'Category', 'Amount', 'Payment Method', 'Description'], ...reportData.recent.map((ex) => [new Date(ex.created_at).toLocaleString(), ex.category, ex.amount, ex.payment_method || 'cash', ex.description || ''])];
     downloadCsv(`expenses-report-${reportStart}-to-${reportEnd}.csv`, rows);
   };
@@ -437,8 +444,10 @@ export default function Shift() {
                     <button onClick={handleExport} className="border border-outline-variant text-primary text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1"><Download size={16} /> Export CSV</button>
                   </div>
                 </div>
-                {!reportData ? (
+                {reportData === undefined ? (
                   <p className="text-on-surface-variant text-sm">Loading...</p>
+                ) : !reportData ? (
+                  <p className="text-on-surface-variant text-sm">Expense report is available to owners only.</p>
                 ) : (
                   <>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">

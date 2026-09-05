@@ -27,7 +27,10 @@ function Utang() {
   const { showToast } = useToast();
 
   const loadAll = () => {
-    apiFetch(UTANG_API).then((res) => res.json()).then(setLedger);
+    apiFetch(UTANG_API)
+      .then((res) => res.json())
+      .then((d) => Array.isArray(d) && setLedger(d))
+      .catch((err) => console.error(err));
     apiFetch(`${UTANG_API}/summary`)
       .then(async (res) => {
         const data = await res.json();
@@ -45,7 +48,8 @@ function Utang() {
     setSelectedCustomer(customer);
     apiFetch(`${UTANG_API}/${customer.customer_id}`)
       .then((res) => res.json())
-      .then(setHistory);
+      .then((d) => setHistory(Array.isArray(d) ? d : []))
+      .catch(() => setHistory([]));
   };
 
   const handleSavePayment = async (payload) => {

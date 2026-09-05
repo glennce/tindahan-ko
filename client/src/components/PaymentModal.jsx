@@ -83,7 +83,6 @@ function PaymentModal({ isOpen, onClose, onSave, customers, preselectedCustomer 
             >
               <option value="cash">Cash</option>
               <option value="gcash">GCash</option>
-              <option value="bank_transfer">Bank Transfer</option>
             </select>
           </div>
 
