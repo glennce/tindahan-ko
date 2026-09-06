@@ -73,6 +73,85 @@ function downloadCsv(filename, rows) {
 }
 const peso = (n) => `₱${Number(n || 0).toFixed(2)}`;
 
+/* Export combined low-stock + out-of-stock items as a PDF, grouped by category */
+async function exportRestockPdf(inv) {
+  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  const items = [...(inv?.low_stock_list || []), ...(inv?.out_of_stock_list || [])];
+  const doc = new jsPDF();
+  const dateStr = today();
+  const pageW = doc.internal.pageSize.getWidth();
+
+  doc.setFontSize(16);
+  doc.text('Restock List', 14, 16);
+  doc.setFontSize(10);
+  doc.setTextColor(100);
+  doc.text(`Generated: ${dateStr} · ${items.length} item(s) need restocking`, 14, 23);
+  doc.setTextColor(0);
+
+  if (items.length === 0) {
+    doc.setFontSize(12);
+    doc.text('All stocks are healthy — nothing to restock.', 14, 36);
+    doc.save(`restock-by-category-${dateStr}.pdf`);
+    return;
+  }
+
+  // Group by category, sort categories A–Z and items by stock then name
+  const groups = {};
+  items.forEach((p) => {
+    const cat = (p.category || 'Others').trim() || 'Others';
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(p);
+  });
+  const sortedCats = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  sortedCats.forEach((cat) => {
+    groups[cat].sort((a, b) => Number(a.stock_quantity) - Number(b.stock_quantity) || String(a.name).localeCompare(String(b.name)));
+  });
+
+  let y = 30;
+  sortedCats.forEach((cat) => {
+    const list = groups[cat];
+    // Avoid orphan category header at page bottom
+    if (y > doc.internal.pageSize.getHeight() - 40) {
+      doc.addPage();
+      y = 16;
+    }
+    doc.setFontSize(12);
+    doc.setFont(undefined, 'bold');
+    doc.text(`${cat} (${list.length})`, 14, y);
+    doc.setFont(undefined, 'normal');
+    y += 2;
+
+    autoTable(doc, {
+      startY: y,
+      head: [['Product', 'Stock', 'Threshold', 'Status']],
+      body: list.map((p) => [
+        p.name,
+        String(p.stock_quantity ?? 0),
+        String(p.low_stock_threshold ?? '—'),
+        Number(p.stock_quantity) <= 0 ? 'Out of Stock' : 'Low Stock',
+      ]),
+      styles: { fontSize: 9, cellPadding: 2 },
+      headStyles: { fillColor: [37, 99, 235] },
+      margin: { left: 14, right: 14 },
+    });
+    y = doc.lastAutoTable.finalY + 10;
+  });
+
+  // Footer page numbers
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(130);
+    doc.text(`Page ${i} of ${pages} · Tindahan Ko`, pageW - 14, doc.internal.pageSize.getHeight() - 8, { align: 'right' });
+  }
+
+  doc.save(`restock-by-category-${dateStr}.pdf`);
+}
+
 /* ---------- small chart primitives (no external deps) ---------- */
 function Kpi({ icon: Icon, label, value, delta, invert }) {
   const up = (delta ?? 0) >= 0;
@@ -465,7 +544,7 @@ function InventoryDash({ bundle, start, end }) {
               <QuickBtn icon={Plus} label="Add Product" to="/inventory" />
               <QuickBtn icon={ArrowLeftRight} label="Stock In" to="/inventory" />
               <QuickBtn icon={ClipboardCheck} label="Stock Audit" to="/inventory" />
-              <QuickBtn icon={FileText} label="Restock List" onClick={() => downloadCsv(`restock-${today()}.csv`, [['Product', 'Stock'], ...[...(inv.low_stock_list || []), ...(inv.out_of_stock_list || [])].map((p) => [p.name, p.stock_quantity])])} />
+              <QuickBtn icon={FileText} label="Restock List" onClick={() => exportRestockPdf(inv)} />
             </div>
           </Card>
         </div>
