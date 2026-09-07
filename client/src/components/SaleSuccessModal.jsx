@@ -34,6 +34,24 @@ function SaleSuccessModal({ isOpen, onClose, onNewSale, sale }) {
                 </div>
               </>
             )}
+            {sale.payment_method === 'split' && (
+              <>
+                <div className="flex justify-between">
+                  <span className="text-on-surface-variant">Cash</span>
+                  <span className="text-on-surface">₱{Number(sale.amount_tendered || sale.cash_amount || 0).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-on-surface-variant">GCash</span>
+                  <span className="text-on-surface">₱{Number(sale.gcash_amount || 0).toFixed(2)}</span>
+                </div>
+                {(Number(sale.total_amount) - Number(sale.amount_tendered || sale.cash_amount || 0) - Number(sale.gcash_amount || 0)) > 0.01 && (
+                  <div className="flex justify-between">
+                    <span className="text-on-surface-variant">Utang</span>
+                    <span className="text-on-surface">₱{(Number(sale.total_amount) - Number(sale.amount_tendered || sale.cash_amount || 0) - Number(sale.gcash_amount || 0)).toFixed(2)}</span>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
 

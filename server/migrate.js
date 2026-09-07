@@ -113,6 +113,7 @@ const p=require('./db');
       )`);
   await p.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'cash'`);
   await p.query(`UPDATE expenses SET payment_method='cash' WHERE payment_method IS NULL`);
+  await p.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS gcash_amount NUMERIC DEFAULT 0`);
   console.log('migration done');
   const r=await p.query(`SELECT column_name FROM information_schema.columns WHERE table_name='expenses'`);
   console.log(r.rows);

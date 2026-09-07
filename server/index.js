@@ -5,7 +5,6 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const pool = require('./db');
-const UTANG_MARKUP_PER_UNIT = 2.00; // ₱2 added per unit when payment_method is 'utang'
 const requireRole = require('./requireRole');
 
 const app = express();
@@ -75,6 +74,7 @@ async function ensureDB() {
         total_amount NUMERIC NOT NULL DEFAULT 0,
         payment_method VARCHAR(20) DEFAULT 'cash',
         amount_tendered NUMERIC,
+        gcash_amount NUMERIC DEFAULT 0,
         change_amount NUMERIC,
         status VARCHAR(20) DEFAULT 'completed',
         created_at TIMESTAMPTZ DEFAULT NOW()
@@ -155,6 +155,7 @@ async function ensureDB() {
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS subtotal NUMERIC DEFAULT 0`);
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS discount_amount NUMERIC DEFAULT 0`);
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'`);
+    await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS gcash_amount NUMERIC DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'owner'`);
     // Cash drawer breakdown persistence (for history details: debt from credit, GCash paid)
     await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS cash_sales NUMERIC DEFAULT 0`);
@@ -393,7 +394,7 @@ app.delete('/api/customers/:id', requireAuth, async (req, res) => {
 });
 
 app.post('/api/sales', requireAuth, async (req, res) => {
-  const { customer_id, items, payment_method, amount_tendered, discount_amount } = req.body;
+  const { customer_id, items, payment_method, amount_tendered, cash_amount, gcash_amount, discount_amount } = req.body;
 
   if (!items || items.length === 0) {
     return res.status(400).json({ error: 'Sale must include at least one item' });
@@ -406,24 +407,50 @@ app.post('/api/sales', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const markupPerUnit = (payment_method === 'utang' || payment_method === 'split') ? UTANG_MARKUP_PER_UNIT : 0;
     const subtotal = items.reduce(
-      (sum, item) => sum + item.quantity * (item.unit_price + markupPerUnit),
+      (sum, item) => sum + item.quantity * Number(item.unit_price),
       0
     );
     const discount = Number(discount_amount) || 0;
     const total_amount = Math.max(subtotal - discount, 0);
     const change_amount = payment_method === 'cash' ? (amount_tendered - total_amount) : null;
 
+    // Split = cash + GCash (e.g. total 150 = 50 cash + 100 GCash).
+    // If cash + GCash < total, the remainder goes to utang (requires customer).
+    let splitCash = 0;
+    let splitGcash = 0;
+    let utangPortion = 0;
+    if (payment_method === 'split') {
+      splitCash = Number(cash_amount ?? amount_tendered ?? 0) || 0;
+      splitGcash = Number(gcash_amount ?? 0) || 0;
+      if (splitCash < 0 || splitGcash < 0) throw new Error('Split amounts cannot be negative.');
+      const paid = splitCash + splitGcash;
+      if (paid <= 0) throw new Error('Enter a cash and/or GCash amount greater than ₱0.');
+      if (paid - total_amount > 0.01) throw new Error('Cash + GCash cannot exceed the total.');
+      utangPortion = Math.max(total_amount - paid, 0);
+      if (utangPortion > 0.01 && !customer_id) {
+        throw new Error('Remaining balance requires a customer (utang).');
+      }
+    }
+
     const saleResult = await client.query(
-      `INSERT INTO sales (customer_id, subtotal, discount_amount, total_amount, payment_method, amount_tendered, change_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [customer_id || null, subtotal, discount, total_amount, payment_method, amount_tendered || null, change_amount]
+      `INSERT INTO sales (customer_id, subtotal, discount_amount, total_amount, payment_method, amount_tendered, gcash_amount, change_amount)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [
+        customer_id || null,
+        subtotal,
+        discount,
+        total_amount,
+        payment_method,
+        payment_method === 'split' ? splitCash : (amount_tendered || null),
+        payment_method === 'split' ? splitGcash : null,
+        change_amount,
+      ]
     );
     const sale = saleResult.rows[0];
 
     for (const item of items) {
-    const effectiveUnitPrice = item.unit_price + markupPerUnit;
+    const effectiveUnitPrice = Number(item.unit_price);
     const itemSubtotal = item.quantity * effectiveUnitPrice;
 
     await client.query(
@@ -443,7 +470,7 @@ app.post('/api/sales', requireAuth, async (req, res) => {
       }
     }
 
-    if (payment_method === 'utang' || payment_method === 'split') {
+    if (payment_method === 'utang' || (payment_method === 'split' && utangPortion > 0.01)) {
       const custResult = await client.query(
         `SELECT name, credit_limit FROM customers WHERE id = $1`,
         [customer_id]
@@ -453,24 +480,14 @@ app.post('/api/sales', requireAuth, async (req, res) => {
       }
       const { name: customerName, credit_limit } = custResult.rows[0];
       const creditLimit = Number(credit_limit);
-    
-      // For a split sale, only the remainder after cash goes on credit.
-      // For a pure utang sale, the whole total goes on credit.
-      const utangPortion =
-        payment_method === 'split'
-          ? total_amount - Number(amount_tendered || 0)
-          : total_amount;
-    
-      if (payment_method === 'split' && (!amount_tendered || Number(amount_tendered) <= 0 || Number(amount_tendered) >= total_amount)) {
-        throw new Error('Split sales require a cash amount greater than ₱0 and less than the total.');
-      }
+      const chargeAmount = payment_method === 'utang' ? total_amount : utangPortion;
     
       const lastUtang = await client.query(
         `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
         [customer_id]
       );
       const previousBalance = lastUtang.rows.length ? Number(lastUtang.rows[0].balance_after) : 0;
-      const newBalance = previousBalance + utangPortion;
+      const newBalance = previousBalance + chargeAmount;
     
       if (newBalance > creditLimit) {
         const available = Math.max(creditLimit - previousBalance, 0);
@@ -482,7 +499,7 @@ app.post('/api/sales', requireAuth, async (req, res) => {
       await client.query(
         `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
          VALUES ($1, $2, 'charge', $3, $4, $5)`,
-        [customer_id, sale.id, utangPortion, newBalance, payment_method === 'split' ? 'Split sale (partial credit)' : 'Sale purchase']
+        [customer_id, sale.id, chargeAmount, newBalance, payment_method === 'split' ? 'Split sale (partial credit)' : 'Sale purchase']
       );
     }
 
@@ -538,21 +555,23 @@ app.post('/api/sales/:id/void', requireAuth, requireRole('owner'), async (req, r
     if ((sale.payment_method === 'utang' || sale.payment_method === 'split') && sale.customer_id) {
       const utangPortion =
         sale.payment_method === 'split'
-          ? Number(sale.total_amount) - Number(sale.amount_tendered)
+          ? Number(sale.total_amount) - Number(sale.amount_tendered || 0) - Number(sale.gcash_amount || 0)
           : Number(sale.total_amount);
 
-      const lastUtang = await client.query(
-        `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
-        [sale.customer_id]
-      );
-      const previousBalance = lastUtang.rows.length ? Number(lastUtang.rows[0].balance_after) : 0;
-      const newBalance = previousBalance - utangPortion;
-    
-      await client.query(
-        `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
-         VALUES ($1, $2, 'payment', $3, $4, 'Sale voided')`,
-        [sale.customer_id, sale.id, utangPortion, newBalance]
-      );
+      if (utangPortion > 0.01) {
+        const lastUtang = await client.query(
+          `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+          [sale.customer_id]
+        );
+        const previousBalance = lastUtang.rows.length ? Number(lastUtang.rows[0].balance_after) : 0;
+        const newBalance = previousBalance - utangPortion;
+      
+        await client.query(
+          `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
+           VALUES ($1, $2, 'payment', $3, $4, 'Sale voided')`,
+          [sale.customer_id, sale.id, utangPortion, newBalance]
+        );
+      }
     }
 
     await client.query(`UPDATE sales SET status = 'voided' WHERE id = $1`, [sale.id]);
@@ -1457,9 +1476,15 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
     [startTime, endTime]
   );
   const gcashSales = await client.query(
-    `SELECT COALESCE(SUM(total_amount), 0) AS total
+    `SELECT COALESCE(SUM(
+       CASE
+         WHEN payment_method = 'gcash' THEN total_amount
+         WHEN payment_method = 'split' THEN COALESCE(gcash_amount, 0)
+         ELSE 0
+       END
+     ), 0) AS total
      FROM sales
-     WHERE status = 'completed' AND payment_method = 'gcash' AND created_at BETWEEN $1 AND $2`,
+     WHERE status = 'completed' AND created_at BETWEEN $1 AND $2`,
     [startTime, endTime]
   );
   const cashUtangPayments = await client.query(
@@ -1609,8 +1634,8 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
     `);
     const closedGcashSales = await pool.query(`
-      SELECT COALESCE(SUM(s.total_amount),0) AS total FROM sales s
-      WHERE s.status='completed' AND s.payment_method='gcash' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+      SELECT COALESCE(SUM(CASE WHEN s.payment_method='gcash' THEN s.total_amount WHEN s.payment_method='split' THEN COALESCE(s.gcash_amount,0) ELSE 0 END),0) AS total FROM sales s
+      WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
     `);
     const closedCashPayments = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions

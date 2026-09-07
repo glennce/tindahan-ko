@@ -8,7 +8,6 @@ import { formatStock } from '../utils';
 const PRODUCTS_API = '/products';
 const CUSTOMERS_API = '/customers';
 const SALES_API = '/sales';
-const UTANG_MARKUP_PER_UNIT = 2; // Keep in sync with the same constant in server/index.js
 
 function SalesPOS() {
   const [products, setProducts] = useState([]);
@@ -17,6 +16,7 @@ function SalesPOS() {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [customerId, setCustomerId] = useState('');
   const [amountTendered, setAmountTendered] = useState('');
+  const [gcashAmount, setGcashAmount] = useState('');
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
@@ -100,9 +100,7 @@ function SalesPOS() {
   };
 
   const subtotal = cart.reduce((sum, item) => {
-    const markupApplies = paymentMethod === 'utang' || paymentMethod === 'split';
-    const price = markupApplies ? item.unit_price + UTANG_MARKUP_PER_UNIT : item.unit_price;
-    return sum + item.quantity * price;
+    return sum + item.quantity * Number(item.unit_price);
   }, 0);
   const discountAmount = Number(discount) || 0;
   const total = Math.max(subtotal - discountAmount, 0);
@@ -117,6 +115,7 @@ function SalesPOS() {
   const resetSale = () => {
     setCart([]);
     setAmountTendered('');
+    setGcashAmount('');
     setPaymentMethod('cash');
     setCustomerId('');
     setDiscount('');
@@ -138,29 +137,47 @@ function SalesPOS() {
       return;
     }
     if (paymentMethod === 'split') {
-      if (!customerId) {
-        showToast('Select a customer for split payment.', 'error');
+      const cash = Number(amountTendered) || 0;
+      const gcash = Number(gcashAmount) || 0;
+      const paid = cash + gcash;
+      if (paid <= 0) {
+        showToast('Enter a cash and/or GCash amount greater than ₱0.', 'error');
         return;
       }
-      if (!amountTendered || Number(amountTendered) <= 0 || Number(amountTendered) >= total) {
-        showToast('Cash amount must be greater than ₱0 and less than the total.', 'error');
+      if (paid - total > 0.01) {
+        showToast('Cash + GCash cannot exceed the total.', 'error');
+        return;
+      }
+      const remainder = total - paid;
+      if (remainder > 0.01 && !customerId) {
+        showToast('Select a customer for the remaining utang balance.', 'error');
+        return;
+      }
+      if (remainder > 0.01 && selectedCustomerInfo && remainder > selectedCustomerInfo.available) {
+        showToast(`Exceeds available credit (₱${selectedCustomerInfo.available.toFixed(2)})`, 'error');
         return;
       }
     }
 
     setSubmitting(true);
     try {
+      const isSplit = paymentMethod === 'split';
+      const splitCash = isSplit ? (Number(amountTendered) || 0) : null;
+      const splitGcash = isSplit ? (Number(gcashAmount) || 0) : null;
+      const splitRemainder = isSplit ? total - splitCash - splitGcash : 0;
       const res = await apiFetch(SALES_API, {
         method: 'POST',
         body: JSON.stringify({
-          customer_id: (paymentMethod === 'utang' || paymentMethod === 'split') ? Number(customerId) : null,
+          customer_id: (paymentMethod === 'utang' || (isSplit && splitRemainder > 0.01)) ? Number(customerId) : null,
           items: cart.map(({ product_id, quantity, unit_price }) => ({
             product_id,
             quantity,
             unit_price,
           })),
           payment_method: paymentMethod,
-          amount_tendered: paymentMethod === 'split' ? Number(amountTendered) : paymentMethod === 'cash' ? total : null,
+          amount_tendered: isSplit ? splitCash : paymentMethod === 'cash' ? total : null,
+          cash_amount: isSplit ? splitCash : null,
+          gcash_amount: isSplit ? splitGcash : null,
           discount_amount: discountAmount,
         }),
       });
@@ -386,12 +403,6 @@ function SalesPOS() {
 
           
           {paymentMethod === 'utang' && (
-            <p className="text-xs text-on-surface-variant mb-2">
-              +₱{UTANG_MARKUP_PER_UNIT.toFixed(2)}/item utang markup included
-            </p>
-          )}
-          
-          {paymentMethod === 'utang' && (
             <>
               <div className="flex gap-2 mb-2">
                 <select
@@ -424,30 +435,58 @@ function SalesPOS() {
 
           {paymentMethod === 'split' && (
             <div className="mb-3 space-y-2">
-              <select
-                value={customerId}
-                onChange={(e) => setCustomerId(e.target.value)}
-                className="w-full border border-outline-variant rounded-lg px-3 py-2"
-              >
-                <option value="">Select customer...</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-              <div>
-                <label className="text-sm text-on-surface-variant">Cash Received (partial)</label>
-                <input
-                  type="number"
-                  value={amountTendered}
-                  onChange={(e) => setAmountTendered(e.target.value)}
-                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-sm text-on-surface-variant">Cash</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={amountTendered}
+                    onChange={(e) => setAmountTendered(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-on-surface-variant">GCash</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={gcashAmount}
+                    onChange={(e) => setGcashAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+                  />
+                </div>
               </div>
-              {amountTendered && Number(amountTendered) > 0 && Number(amountTendered) < total && (
-                <p className="text-sm text-error">
-                  Remaining on utang: ₱{(total - Number(amountTendered)).toFixed(2)}
-                </p>
-              )}
+              {(() => {
+                const cash = Number(amountTendered) || 0;
+                const gcash = Number(gcashAmount) || 0;
+                const paid = cash + gcash;
+                const remainder = total - paid;
+                if (paid <= 0) return null;
+                if (paid - total > 0.01) return <p className="text-sm text-error">Cash + GCash exceeds total.</p>;
+                if (remainder > 0.01) {
+                  return (
+                    <>
+                      <p className="text-sm text-on-surface-variant">
+                        Paid: ₱{paid.toFixed(2)} · Remaining: ₱{remainder.toFixed(2)} (utang)
+                      </p>
+                      <select
+                        value={customerId}
+                        onChange={(e) => setCustomerId(e.target.value)}
+                        className="w-full border border-outline-variant rounded-lg px-3 py-2"
+                      >
+                        <option value="">Select customer for remainder...</option>
+                        {customers.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </>
+                  );
+                }
+                return <p className="text-sm text-secondary">Paid in full: ₱{paid.toFixed(2)} (cash + GCash).</p>;
+              })()}
             </div>
           )}
 

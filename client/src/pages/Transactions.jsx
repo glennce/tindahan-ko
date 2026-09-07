@@ -216,12 +216,19 @@ function Transactions() {
                       {selected.payment_method === 'split' && (
                         <>
                           <div className="flex justify-between text-on-surface-variant">
-                            <span>Cash Paid</span><span>₱{Number(selected.amount_tendered).toFixed(2)}</span>
+                            <span>Cash Paid</span><span>₱{Number(selected.amount_tendered || 0).toFixed(2)}</span>
                           </div>
-                          <div className="flex justify-between text-error">
-                            <span>Charged to Utang</span>
-                            <span>₱{(Number(selected.total_amount) - Number(selected.amount_tendered)).toFixed(2)}</span>
-                          </div>
+                          {Number(selected.gcash_amount || 0) > 0 && (
+                            <div className="flex justify-between text-on-surface-variant">
+                              <span>GCash Paid</span><span>₱{Number(selected.gcash_amount).toFixed(2)}</span>
+                            </div>
+                          )}
+                          {(Number(selected.total_amount) - Number(selected.amount_tendered || 0) - Number(selected.gcash_amount || 0)) > 0.01 && (
+                            <div className="flex justify-between text-error">
+                              <span>Charged to Utang</span>
+                              <span>₱{(Number(selected.total_amount) - Number(selected.amount_tendered || 0) - Number(selected.gcash_amount || 0)).toFixed(2)}</span>
+                            </div>
+                          )}
                         </>
                       )}
                       <div className="flex justify-between font-bold text-on-surface pt-1 border-t border-outline-variant">
