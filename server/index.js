@@ -1576,10 +1576,34 @@ async function ensureTodayShift() {
   const today = manilaToday();
   let result = await pool.query(`SELECT * FROM cash_shifts WHERE shift_date = $1`, [today]);
   if (result.rows.length === 0) {
-    result = await pool.query(
-      `INSERT INTO cash_shifts (shift_date, status) VALUES ($1, 'active') RETURNING *`,
+    // Carry over yesterday's counted cash as today's opening so daily closes
+    // accumulate (day1 1500 + day2 2500 = 4000) instead of double-counting
+    // the full drawer when opening is left at 0.
+    const prev = await pool.query(
+      `SELECT closing_cash FROM cash_shifts WHERE status = 'closed' AND closing_cash IS NOT NULL ORDER BY shift_date DESC LIMIT 1`
+    );
+    const carried = prev.rows.length ? prev.rows[0].closing_cash : null;
+    if (carried !== null) {
+      result = await pool.query(
+        `INSERT INTO cash_shifts (shift_date, status, opening_cash) VALUES ($1, 'active', $2) RETURNING *`,
+        [today, carried]
+      );
+    } else {
+      result = await pool.query(
+        `INSERT INTO cash_shifts (shift_date, status) VALUES ($1, 'active') RETURNING *`,
+        [today]
+      );
+    }
+  } else if (result.rows[0].opening_cash === null) {
+    // Backfill opening from the latest counted close (once) so expected math is right.
+    const prev = await pool.query(
+      `SELECT closing_cash FROM cash_shifts WHERE status = 'closed' AND closing_cash IS NOT NULL AND shift_date < $1 ORDER BY shift_date DESC LIMIT 1`,
       [today]
     );
+    if (prev.rows.length) {
+      await pool.query(`UPDATE cash_shifts SET opening_cash = $1 WHERE shift_date = $2 AND opening_cash IS NULL`, [prev.rows[0].closing_cash, today]);
+      result = await pool.query(`SELECT * FROM cash_shifts WHERE shift_date = $1`, [today]);
+    }
   }
   return result.rows[0];
 }
@@ -1592,8 +1616,19 @@ async function freezeStaleShifts() {
   );
   for (const shift of stale.rows) {
     const dateStr = shift.shift_date.toISOString().slice(0, 10);
+    // Fill missing opening from the previous counted close so the frozen
+    // expected isn't missing the carried-over cash.
+    let opening = shift.opening_cash;
+    if (opening === null) {
+      const prev = await pool.query(
+        `SELECT closing_cash FROM cash_shifts WHERE status = 'closed' AND closing_cash IS NOT NULL AND shift_date < $1 ORDER BY shift_date DESC LIMIT 1`,
+        [shift.shift_date]
+      );
+      opening = prev.rows.length ? prev.rows[0].closing_cash : 0;
+      await pool.query(`UPDATE cash_shifts SET opening_cash = $1 WHERE id = $2`, [opening, shift.id]);
+    }
     const { start, end } = manilaDayBounds(dateStr);
-    const running = await computeExpectedCash(shift.opening_cash || 0, start, end);
+    const running = await computeExpectedCash(opening || 0, start, end);
     await pool.query(
       `UPDATE cash_shifts SET status = 'pending_count', expected_cash = $1, gcash_sales = $2, utang_charged = $3,
         cash_sales = $4, cash_utang_payments = $5, gcash_utang_payments = $6,

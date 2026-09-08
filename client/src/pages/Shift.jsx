@@ -221,8 +221,13 @@ export default function Shift() {
   // Cumulative total after count = counted total + today's net.
   const todayCashNet = Number(running.cash_sales ?? 0) + Number(running.cash_utang_payments ?? 0);
   const todayGcashNet = Number(running.gcash_sales ?? 0) + Number(running.gcash_utang_payments ?? 0);
-  const projectedCash = isClosed ? totalCash : totalCash + todayCashNet;
-  const projectedGcash = isClosed ? totalGcash : totalGcash + todayGcashNet;
+  // Live totals: counted days + today's sales so far (each day's sales add up:
+  // 1500 today -> KPI 1500, +2500 tomorrow -> 4000, -500 expense -> 3500, +3000 -> 6500).
+  // Expenses/transfers after the last count are already deducted inside totalCash/totalGcash.
+  const liveCash = isClosed ? totalCash : totalCash + todayCashNet;
+  const liveGcash = isClosed ? totalGcash : totalGcash + todayGcashNet;
+  const projectedCash = liveCash;
+  const projectedGcash = liveGcash;
 
   return (
     <div>
@@ -236,10 +241,10 @@ export default function Shift() {
             <Wallet className="text-on-primary" size={22} />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total Cash in Hand — Counted{closedDays > 0 ? ` (${closedDays} day${closedDays === 1 ? '' : 's'} cumulative)` : ''}</p>
-            <p className="text-2xl font-bold text-on-surface">₱{Number(totalCash).toFixed(2)}</p>
+            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total Cash in Hand{closedDays > 0 ? ` (${closedDays} day${closedDays === 1 ? '' : 's'} cumulative)` : ''}</p>
+            <p className="text-2xl font-bold text-on-surface">₱{Number(liveCash).toFixed(2)}</p>
             {!isClosed
-              ? <p className="text-xs text-secondary truncate">Today net +₱{Number(todayCashNet).toFixed(2)} → ₱{Number(projectedCash).toFixed(2)} after count</p>
+              ? <p className="text-xs text-secondary truncate">Counted ₱{Number(totalCash).toFixed(2)} + today +₱{Number(todayCashNet).toFixed(2)}</p>
               : <p className="text-xs text-on-surface-variant truncate">Today closed: counted ₱{Number(shift.closing_cash).toFixed(2)} · Expected ₱{Number(shift.expected_cash).toFixed(2)}</p>}
           </div>
         </div>
@@ -248,10 +253,10 @@ export default function Shift() {
             <Smartphone className="text-secondary" size={22} />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total GCash — Counted{closedDays > 0 ? ` (${closedDays} day${closedDays === 1 ? '' : 's'} cumulative)` : ''}</p>
-            <p className="text-2xl font-bold text-on-surface">₱{Number(totalGcash).toFixed(2)}</p>
+            <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total GCash{closedDays > 0 ? ` (${closedDays} day${closedDays === 1 ? '' : 's'} cumulative)` : ''}</p>
+            <p className="text-2xl font-bold text-on-surface">₱{Number(liveGcash).toFixed(2)}</p>
             <p className="text-xs text-on-surface-variant truncate">Counted · Sales ₱{Number(closedData.gcash_sales ?? 0).toFixed(2)} - Expenses ₱{Number(closedData.gcash_expenses ?? 0).toFixed(2)}</p>
-            {!isClosed && <p className="text-xs text-secondary truncate">Today net +₱{Number(todayGcashNet).toFixed(2)} → ₱{Number(projectedGcash).toFixed(2)} after count</p>}
+            {!isClosed && <p className="text-xs text-secondary truncate">Counted ₱{Number(totalGcash).toFixed(2)} + today +₱{Number(todayGcashNet).toFixed(2)}</p>}
           </div>
         </div>
       </div>
