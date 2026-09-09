@@ -1470,7 +1470,10 @@ app.post('/api/stock-adjustments', requireAuth, requireRole('owner'), async (req
   }
 });
 
-async function computeExpectedCash(openingCash, startTime, endTime, client = pool) {
+async function computeExpectedCash(openingCash, startTime, endTime, client = pool, expenseStart = null) {
+  // Sales/utang count from startTime, but expenses can start later (after a
+  // drawer reset, pre-reset expenses such as a manual "zeroing" entry are ignored).
+  const expStart = expenseStart || startTime;
   const cashSales = await client.query(
     `SELECT COALESCE(SUM(
        CASE
@@ -1516,12 +1519,12 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
   const cashExpenses = await client.query(
     `SELECT COALESCE(SUM(amount), 0) AS total
      FROM expenses WHERE created_at BETWEEN $1 AND $2 AND (payment_method = 'cash' OR payment_method IS NULL)`,
-    [startTime, endTime]
+    [expStart, endTime]
   );
   const gcashExpenses = await client.query(
     `SELECT COALESCE(SUM(amount), 0) AS total
      FROM expenses WHERE created_at BETWEEN $1 AND $2 AND payment_method = 'gcash'`,
-    [startTime, endTime]
+    [expStart, endTime]
   );
   const totalExpenses = Number(cashExpenses.rows[0].total) + Number(gcashExpenses.rows[0].total);
 
@@ -1660,10 +1663,13 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       [today]
     );
     const shift = todayResult.rows[0];
-    // Reset is date-level: old shift rows are deleted on reset, so history
-    // before today is ignored while today's sales/expenses from 00:00 still count.
+    // Reset is date-level for sales (today's sales from 00:00 still count),
+    // but expenses before the reset moment are ignored (e.g. a manual
+    // "zeroing" entry stays in history without deducting from the drawer).
+    const resetAt = await getDrawerResetAt();
     const { start } = manilaDayBounds(today);
-    const running = await computeExpectedCash(shift.opening_cash || 0, start, new Date());
+    const expenseStart = resetAt && resetAt > start ? resetAt : start;
+    const running = await computeExpectedCash(shift.opening_cash || 0, start, new Date(), pool, expenseStart);
 
     const pending = await pool.query(
       `SELECT cs.*, u.name AS opened_by_name FROM cash_shifts cs
@@ -1695,11 +1701,13 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
     const closedCashExpenses = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM expenses
       WHERE (payment_method='cash' OR payment_method IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-    `);
+        AND ($1::timestamptz IS NULL OR created_at >= $1)
+    `, [resetAt]);
     const closedGcashExpenses = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM expenses
       WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-    `);
+        AND ($1::timestamptz IS NULL OR created_at >= $1)
+    `, [resetAt]);
     // Total cash in hand must ACCUMULATE across days (yesterday 2004 + today 2400 = 4404),
     // not reset to the latest day. Each day's net added cash = closing - opening
     // (works whether opening is 0 or carried over from the previous close).
@@ -1826,6 +1834,15 @@ app.post('/api/shift/reset', requireAuth, requireRole('owner'), async (req, res)
   }
 });
 
+async function getDrawerResetAt(client = pool) {
+  try {
+    const r = await client.query(`SELECT MAX(reset_at) AS reset_at FROM drawer_resets`);
+    return r.rows[0]?.reset_at ? new Date(r.rows[0].reset_at) : null;
+  } catch {
+    return null;
+  }
+}
+
 app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
   const { closing_cash, notes } = req.body;
   if (closing_cash === undefined || Number(closing_cash) < 0) {
@@ -1838,14 +1855,17 @@ app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
     if (shift.status === 'closed') return res.status(400).json({ error: 'Shift already closed' });
 
     const dateStr = shift.shift_date.toISOString().slice(0, 10);
+    const resetAt = await getDrawerResetAt();
     let breakdown;
     if (shift.status === 'active') {
       const { start } = manilaDayBounds(dateStr);
-      breakdown = await computeExpectedCash(shift.opening_cash || 0, start, new Date());
+      const expenseStart = resetAt && resetAt > start ? resetAt : start;
+      breakdown = await computeExpectedCash(shift.opening_cash || 0, start, new Date(), pool, expenseStart);
     } else {
       // pending_count: prefer frozen values, backfill missing pieces from full-day recompute
       const { start, end } = manilaDayBounds(dateStr);
-      const full = await computeExpectedCash(shift.opening_cash || 0, start, end);
+      const expenseStart = resetAt && resetAt > start ? resetAt : start;
+      const full = await computeExpectedCash(shift.opening_cash || 0, start, end, pool, expenseStart);
       breakdown = {
         expected_cash: shift.expected_cash ?? full.expected_cash,
         gcash_sales: shift.gcash_sales ?? full.gcash_sales,
