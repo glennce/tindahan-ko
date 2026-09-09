@@ -1660,12 +1660,10 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       [today]
     );
     const shift = todayResult.rows[0];
-    const resetAt = await getDrawerResetAt();
+    // Reset is date-level: old shift rows are deleted on reset, so history
+    // before today is ignored while today's sales/expenses from 00:00 still count.
     const { start } = manilaDayBounds(today);
-    // Ignore everything created before the reset moment (e.g. the manual
-    // "zeroing" expense made earlier today), so the drawer restarts at ₱0.
-    const runningStart = resetAt && resetAt > start ? resetAt : start;
-    const running = await computeExpectedCash(shift.opening_cash || 0, runningStart, new Date());
+    const running = await computeExpectedCash(shift.opening_cash || 0, start, new Date());
 
     const pending = await pool.query(
       `SELECT cs.*, u.name AS opened_by_name FROM cash_shifts cs
@@ -1675,38 +1673,33 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
 
     // Closed totals: all sales from yesterday and so on (only days already counted as closed)
     // Don't include today's active sales until counted.
-    // All drawer queries ignore rows created before the reset moment.
+    // After a reset there are no closed rows, so old history is ignored while
+    // today's sales/expenses from 00:00 still count via `running` above.
     const closedCashSales = await pool.query(`
       SELECT COALESCE(SUM(CASE WHEN s.payment_method='cash' THEN s.total_amount WHEN s.payment_method='split' THEN s.amount_tendered ELSE 0 END),0) AS total
       FROM sales s
       WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR s.created_at >= $1)
-    `, [resetAt]);
+    `);
     const closedGcashSales = await pool.query(`
       SELECT COALESCE(SUM(CASE WHEN s.payment_method='gcash' THEN s.total_amount WHEN s.payment_method='split' THEN COALESCE(s.gcash_amount,0) ELSE 0 END),0) AS total FROM sales s
       WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR s.created_at >= $1)
-    `, [resetAt]);
+    `);
     const closedCashPayments = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
       WHERE type='payment' AND payment_method='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR created_at >= $1)
-    `, [resetAt]);
+    `);
     const closedGcashPayments = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
       WHERE type='payment' AND payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR created_at >= $1)
-    `, [resetAt]);
+    `);
     const closedCashExpenses = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM expenses
       WHERE (payment_method='cash' OR payment_method IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR created_at >= $1)
-    `, [resetAt]);
+    `);
     const closedGcashExpenses = await pool.query(`
       SELECT COALESCE(SUM(amount),0) AS total FROM expenses
       WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR created_at >= $1)
-    `, [resetAt]);
+    `);
     // Total cash in hand must ACCUMULATE across days (yesterday 2004 + today 2400 = 4404),
     // not reset to the latest day. Each day's net added cash = closing - opening
     // (works whether opening is 0 or carried over from the previous close).
@@ -1763,11 +1756,11 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       const todayGcashExp = Number(running.gcash_expenses ?? 0);
       if (todayCashExp) { closedTotalCash -= todayCashExp; closedCashExpDisplay += todayCashExp; }
       if (todayGcashExp) { closedTotalGcash -= todayGcashExp; closedGcashExpDisplay += todayGcashExp; }
-      // Also apply today's transfers even with no counted day (post-reset only)
-      const todayCashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)`, [today, resetAt]);
-      const todayCashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)`, [today, resetAt]);
-      const todayGcashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)`, [today, resetAt]);
-      const todayGcashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)`, [today, resetAt]);
+      // Also apply today's transfers even with no counted day
+      const todayCashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      const todayCashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      const todayGcashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      const todayGcashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
       closedTotalCash += Number(todayCashTransIn.rows[0].total) - Number(todayCashTransOut.rows[0].total);
       closedTotalGcash += Number(todayGcashTransIn.rows[0].total) - Number(todayGcashTransOut.rows[0].total);
     }
@@ -1832,15 +1825,6 @@ app.post('/api/shift/reset', requireAuth, requireRole('owner'), async (req, res)
     res.status(500).json({ error: 'Failed to reset cash drawer' });
   }
 });
-
-async function getDrawerResetAt(client = pool) {
-  try {
-    const r = await client.query(`SELECT MAX(reset_at) AS reset_at FROM drawer_resets`);
-    return r.rows[0]?.reset_at ? new Date(r.rows[0].reset_at) : null;
-  } catch {
-    return null;
-  }
-}
 
 app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
   const { closing_cash, notes } = req.body;
