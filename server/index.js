@@ -1794,6 +1794,23 @@ app.post('/api/shift/opening-cash', requireAuth, async (req, res) => {
   }
 });
 
+// Reset Cash Drawer to zero: clears all shift history so sales/expenses count
+// from today onwards. Sales records are kept; only the drawer baseline resets.
+app.post('/api/shift/reset', requireAuth, requireRole('owner'), async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM cash_shifts`);
+    const today = manilaToday();
+    const result = await pool.query(
+      `INSERT INTO cash_shifts (shift_date, status, opening_cash) VALUES ($1, 'active', 0) RETURNING *`,
+      [today]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to reset cash drawer' });
+  }
+});
+
 app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
   const { closing_cash, notes } = req.body;
   if (closing_cash === undefined || Number(closing_cash) < 0) {

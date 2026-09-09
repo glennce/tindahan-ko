@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
+import ConfirmModal from '../components/ConfirmModal';
 import { Eye, Wallet, Smartphone, Receipt, Download, ArrowLeftRight, History } from 'lucide-react';
 
 const TABS = [
@@ -66,7 +68,9 @@ export default function Shift() {
   const [reportData, setReportData] = useState(undefined);
   const [transfers, setTransfers] = useState([]);
   const [transferForm, setTransferForm] = useState({ from_wallet: 'cash', to_wallet: 'gcash', amount: '', note: '' });
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const { showToast } = useToast();
+  const { user } = useAuth();
 
   const loadCurrent = () => {
     apiFetch('/shift/current').then((res) => res.json()).then(setData);
@@ -199,6 +203,20 @@ export default function Shift() {
 
   const viewShiftDetail = (id) => {
     apiFetch(`/shift/${id}`).then((res) => res.json()).then(setSelectedShift);
+  };
+
+  const handleResetDrawer = async () => {
+    setShowResetConfirm(false);
+    try {
+      const res = await apiFetch('/shift/reset', { method: 'POST' });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error);
+      loadCurrent();
+      loadHistory();
+      showToast('Cash Drawer reset — counting from zero starting today');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
   };
 
   if (!data) return <p className="text-on-surface-variant">Loading...</p>;
@@ -522,8 +540,17 @@ export default function Shift() {
                   <h2 className="font-semibold text-on-surface">Shift History</h2>
                   <p className="text-xs text-on-surface-variant">Includes debt from credit (utang charged) & GCash received per day.</p>
                 </div>
-                <button
-                  onClick={() => {
+                <div className="flex gap-2">
+                  {user?.role === 'owner' && (
+                    <button
+                      onClick={() => setShowResetConfirm(true)}
+                      className="border border-error text-error text-sm font-medium px-3 py-1.5 rounded-lg"
+                    >
+                      Reset to Zero
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
                     const rows = [['Date', 'Opening', 'Cash Counted', 'Difference', 'Debt from Credit (Utang)', 'GCash Sales', 'GCash Utang Payments', 'GCash Received', 'Cash Expenses', 'GCash Expenses'],
                       ...history.map((s) => {
                         const gcashSales = Number(s.gcash_sales ?? 0);
@@ -536,6 +563,7 @@ export default function Shift() {
                 >
                   <Download size={16} /> Export CSV
                 </button>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm min-w-[900px]">
@@ -627,6 +655,15 @@ export default function Shift() {
           </div>
         </>
       )}
+
+      <ConfirmModal
+        isOpen={showResetConfirm}
+        title="Reset Cash Drawer to zero?"
+        message="This clears all counted shift history. KPIs restart at ₱0 and count sales + expenses from today onwards. Sales records are kept. This cannot be undone."
+        confirmLabel="Reset to Zero"
+        onConfirm={handleResetDrawer}
+        onCancel={() => setShowResetConfirm(false)}
+      />
     </div>
   );
 }
