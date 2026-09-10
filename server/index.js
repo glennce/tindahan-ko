@@ -172,6 +172,21 @@ async function ensureDB() {
         reset_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+    // Repack / conversion history (bulk -> tingi pieces, twin pack -> singles)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS repack_logs (
+        id SERIAL PRIMARY KEY,
+        source_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        source_name TEXT NOT NULL,
+        source_qty NUMERIC NOT NULL,
+        dest_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        dest_name TEXT NOT NULL,
+        dest_qty NUMERIC NOT NULL,
+        notes TEXT,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
     // Stock audit / shrinkage tracking (sold-but-unrecorded, theft, damage, etc.)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS stock_adjustments (
@@ -1385,6 +1400,73 @@ app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to restock product' });
+  }
+});
+
+// --- Repack / convert: turn units of one product into units of another ---
+// e.g. 2 packs of 1/4 Sugar -> 15 pcs of P2 Sugar, or 1 twin-pack coffee -> 2 singles.
+// Atomic: deducts source, adds destination, logs to repack_logs (costs untouched).
+app.post('/api/products/repack', requireAuth, requireRole('owner'), async (req, res) => {
+  const { source_product_id, source_qty, dest_product_id, dest_qty, notes } = req.body;
+  const useQty = Number(source_qty);
+  const makeQty = Number(dest_qty);
+  const srcId = Number(source_product_id);
+  const dstId = Number(dest_product_id);
+
+  if (!srcId || !dstId) return res.status(400).json({ error: 'Source and destination products are required' });
+  if (srcId === dstId) return res.status(400).json({ error: 'Source and destination must be different products' });
+  if (!Number.isFinite(useQty) || useQty <= 0) return res.status(400).json({ error: 'Quantity used must be greater than 0' });
+  if (!Number.isFinite(makeQty) || makeQty <= 0) return res.status(400).json({ error: 'Quantity produced must be greater than 0' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const rows = await client.query(
+      `SELECT * FROM products WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
+      [[srcId, dstId]]
+    );
+    const src = rows.rows.find((p) => Number(p.id) === srcId);
+    const dst = rows.rows.find((p) => Number(p.id) === dstId);
+    if (!src) throw new Error('Source product not found');
+    if (!dst) throw new Error('Destination product not found');
+    if (Number(src.stock_quantity) < useQty) {
+      throw new Error(`Not enough ${src.name} — only ${src.stock_quantity} in stock.`);
+    }
+    const updSrc = await client.query(
+      `UPDATE products SET stock_quantity = stock_quantity - $1 WHERE id = $2 RETURNING *`,
+      [useQty, srcId]
+    );
+    const updDst = await client.query(
+      `UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2 RETURNING *`,
+      [makeQty, dstId]
+    );
+    const log = await client.query(
+      `INSERT INTO repack_logs (source_product_id, source_name, source_qty, dest_product_id, dest_name, dest_qty, notes, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [srcId, src.name, useQty, dstId, dst.name, makeQty, notes || null, req.user.id]
+    );
+    await client.query('COMMIT');
+    res.status(201).json({ source: updSrc.rows[0], dest: updDst.rows[0], log: log.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Failed to repack' });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/repack-logs', requireAuth, requireRole('owner'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT rl.*, u.name AS created_by_name FROM repack_logs rl
+       LEFT JOIN users u ON u.id = rl.created_by
+       ORDER BY rl.created_at DESC LIMIT 30`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load repack history' });
   }
 });
 

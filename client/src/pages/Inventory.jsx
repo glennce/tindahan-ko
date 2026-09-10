@@ -2,6 +2,7 @@ import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 import ProductModal from '../components/ProductModal';
 import StockInModal from '../components/StockInModal';
+import RepackModal from '../components/RepackModal';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 import { formatStock } from '../utils';
@@ -32,6 +33,7 @@ function Inventory() {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
   const [stockInOpen, setStockInOpen] = useState(false);
+  const [repackOpen, setRepackOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const { showToast } = useToast();
   const [page, setPage] = useState(1);
@@ -157,6 +159,23 @@ function Inventory() {
     }
   };
 
+  const handleRepack = async (data) => {
+    try {
+      const res = await apiFetch(`${API}/repack`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Repack failed');
+      fetchProducts();
+      showToast(`Repacked ${result.log.source_qty} ${result.log.source_name} → ${result.log.dest_qty} ${result.log.dest_name}`);
+      return true;
+    } catch (err) {
+      showToast(err.message, 'error');
+      throw err;
+    }
+  };
+
   const requestDelete = (id) => {
     setPendingDeleteId(id);
   };
@@ -255,6 +274,12 @@ function Inventory() {
             className="border border-primary text-primary font-medium px-4 py-2 rounded-lg"
           >
             Stock In
+          </button>
+          <button
+            onClick={() => setRepackOpen(true)}
+            className="border border-primary text-primary font-medium px-4 py-2 rounded-lg"
+          >
+            Repack
           </button>
           <button
             onClick={openAddModal}
@@ -536,6 +561,13 @@ function Inventory() {
         isOpen={stockInOpen}
         onClose={() => setStockInOpen(false)}
         onSave={handleStockIn}
+        products={products}
+      />
+
+      <RepackModal
+        isOpen={repackOpen}
+        onClose={() => setRepackOpen(false)}
+        onSave={handleRepack}
         products={products}
       />
       

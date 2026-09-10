@@ -115,6 +115,18 @@ const p=require('./db');
   await p.query(`UPDATE expenses SET payment_method='cash' WHERE payment_method IS NULL`);
   await p.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS gcash_amount NUMERIC DEFAULT 0`);
   await p.query(`CREATE TABLE IF NOT EXISTS drawer_resets (id SERIAL PRIMARY KEY, reset_at TIMESTAMPTZ DEFAULT NOW())`);
+  await p.query(`CREATE TABLE IF NOT EXISTS repack_logs (
+        id SERIAL PRIMARY KEY,
+        source_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        source_name TEXT NOT NULL,
+        source_qty NUMERIC NOT NULL,
+        dest_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        dest_name TEXT NOT NULL,
+        dest_qty NUMERIC NOT NULL,
+        notes TEXT,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
   console.log('migration done');
   const r=await p.query(`SELECT column_name FROM information_schema.columns WHERE table_name='expenses'`);
   console.log(r.rows);
