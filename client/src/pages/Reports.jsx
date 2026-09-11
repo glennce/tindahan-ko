@@ -36,9 +36,9 @@ function downloadCsv(filename, rows) {
 }
 
 /* Export combined low-stock + out-of-stock items as a PDF, grouped by category */
-/* Weekly restock suggestion: 1-week cover based on the Products page sales
-   (qty sold per product in the same range). needed = max(weekly sales - stock
-   on hand, threshold gap, 0), rounded up to packs. */
+/* Restock suggestion: 1-week cover. The Sold column shows the exact Products
+   page number (qty sold in the selected range, e.g. "8 sold" for Sep 6–11).
+   needed = max(weekly sales - stock on hand, threshold gap, 0), rounded up to packs. */
 function suggestOrder(p, days, soldMap) {
   const sold = p.id != null && soldMap[Number(p.id)] !== undefined
     ? Number(soldMap[Number(p.id)])
@@ -50,14 +50,14 @@ function suggestOrder(p, days, soldMap) {
   const needed = Math.max(Math.ceil(weekly - stock - 1e-9), Math.ceil(threshold - stock - 1e-9), 0);
   const perPack = Number(p.units_per_pack) || 0;
   const packs = perPack > 0 ? Math.ceil((needed - 1e-9) / perPack) : needed;
-  const weeklyLabel = `${Number.isInteger(Math.round(weekly * 10) / 10) ? Math.round(weekly) : (Math.round(weekly * 10) / 10)}/wk`;
+  const soldLabel = `${sold} sold`;
   const buyLabel =
     needed <= 0
       ? '—'
       : perPack > 0
         ? `${packs} pack${packs === 1 ? '' : 's'} (${needed} pcs)`
         : `${needed} pcs`;
-  return { weeklyLabel, buyLabel };
+  return { soldLabel, buyLabel };
 }
 
 async function exportRestockPdf(data, start, end) {
@@ -128,13 +128,13 @@ async function exportRestockPdf(data, start, end) {
 
     autoTable(doc, {
       startY: y,
-      head: [['Product', 'Stock', 'Sold/wk', 'To Buy', 'Status']],
+      head: [['Product', 'Stock', `Sold (${start} to ${end})`, 'To Buy', 'Status']],
       body: list.map((p) => {
         const s = suggestOrder(p, rangeDays, soldMap);
         return [
           p.name,
           String(p.stock_quantity ?? 0),
-          s.weeklyLabel,
+          s.soldLabel,
           s.buyLabel,
           Number(p.stock_quantity) <= 0 ? 'Out of Stock' : 'Low Stock',
         ];
