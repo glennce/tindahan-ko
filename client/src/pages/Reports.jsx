@@ -36,7 +36,27 @@ function downloadCsv(filename, rows) {
 }
 
 /* Export combined low-stock + out-of-stock items as a PDF, grouped by category */
-async function exportRestockPdf(data) {
+/* Weekly restock suggestion: 1-week cover based on sales in the selected range.
+   needed = max(weekly sales - stock on hand, threshold gap, 0), rounded up to packs. */
+function suggestOrder(p, days) {
+  const weeks = Math.max(Number(days) / 7, 1 / 7);
+  const weekly = Number(p.qty_sold || 0) / weeks;
+  const stock = Number(p.stock_quantity || 0);
+  const threshold = Number(p.low_stock_threshold ?? 0);
+  const needed = Math.max(Math.ceil(weekly - stock - 1e-9), Math.ceil(threshold - stock - 1e-9), 0);
+  const perPack = Number(p.units_per_pack) || 0;
+  const packs = perPack > 0 ? Math.ceil((needed - 1e-9) / perPack) : needed;
+  const weeklyLabel = `${Number.isInteger(Math.round(weekly * 10) / 10) ? Math.round(weekly) : (Math.round(weekly * 10) / 10)}/wk`;
+  const buyLabel =
+    needed <= 0
+      ? '—'
+      : perPack > 0
+        ? `${packs} pack${packs === 1 ? '' : 's'} (${needed} pcs)`
+        : `${needed} pcs`;
+  return { weeklyLabel, buyLabel };
+}
+
+async function exportRestockPdf(data, start, end) {
   const [{ jsPDF }, { default: autoTable }] = await Promise.all([
     import('jspdf'),
     import('jspdf-autotable'),
@@ -45,12 +65,16 @@ async function exportRestockPdf(data) {
   const doc = new jsPDF();
   const dateStr = today();
   const pageW = doc.internal.pageSize.getWidth();
+  const rangeDays = Math.max(
+    1,
+    Math.round((new Date(end) - new Date(start)) / 86400000) + 1 || 1
+  );
 
   doc.setFontSize(16);
   doc.text('Restock List', 14, 16);
   doc.setFontSize(10);
   doc.setTextColor(100);
-  doc.text(`Generated: ${dateStr} · ${items.length} item(s) need restocking`, 14, 23);
+  doc.text(`Generated: ${dateStr} · Range ${start} to ${end} · 1-week cover · ${items.length} item(s)`, 14, 23);
   doc.setTextColor(0);
 
   if (items.length === 0) {
@@ -88,13 +112,17 @@ async function exportRestockPdf(data) {
 
     autoTable(doc, {
       startY: y,
-      head: [['Product', 'Stock', 'Threshold', 'Status']],
-      body: list.map((p) => [
-        p.name,
-        String(p.stock_quantity ?? 0),
-        String(p.low_stock_threshold ?? '—'),
-        Number(p.stock_quantity) <= 0 ? 'Out of Stock' : 'Low Stock',
-      ]),
+      head: [['Product', 'Stock', 'Sold/wk', 'To Buy', 'Status']],
+      body: list.map((p) => {
+        const s = suggestOrder(p, rangeDays);
+        return [
+          p.name,
+          String(p.stock_quantity ?? 0),
+          s.weeklyLabel,
+          s.buyLabel,
+          Number(p.stock_quantity) <= 0 ? 'Out of Stock' : 'Low Stock',
+        ];
+      }),
       styles: { fontSize: 9, cellPadding: 2 },
       headStyles: { fillColor: [37, 99, 235] },
       margin: { left: 14, right: 14 },
@@ -202,7 +230,7 @@ function Reports() {
             <>
               {activeTab === 'sales' && <SalesReport data={data} />}
               {activeTab === 'profit' && <ProfitReport data={data} />}
-              {activeTab === 'inventory' && <InventoryReport data={data} />}
+              {activeTab === 'inventory' && <InventoryReport data={data} start={start} end={end} />}
               {activeTab === 'utang' && <UtangReport data={data} />}
             </>
           )}
@@ -313,9 +341,9 @@ function ProfitReport({ data }) {
   );
 }
 
-function InventoryReport({ data }) {
+function InventoryReport({ data, start, end }) {
   const handleExportLowStock = () => {
-    exportRestockPdf(data);
+    exportRestockPdf(data, start, end);
   };
 
   return (

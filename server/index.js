@@ -1148,15 +1148,27 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
       [rangeStart, rangeEnd]
     );
     const lowStockList = await pool.query(`
-      SELECT id, name, category, stock_quantity, low_stock_threshold, units_per_pack, unit_label
-      FROM products WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold
-      ORDER BY stock_quantity ASC
-    `);
+      SELECT p.id, p.name, p.category, p.stock_quantity, p.low_stock_threshold,
+             p.units_per_pack, p.unit_label,
+             COALESCE(SUM(si.quantity), 0) AS qty_sold
+      FROM products p
+      LEFT JOIN sale_items si ON si.product_id = p.id
+      LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+        AND s.created_at >= $1 AND s.created_at < $2
+      WHERE p.stock_quantity > 0 AND p.stock_quantity <= p.low_stock_threshold
+      GROUP BY p.id ORDER BY p.stock_quantity ASC
+    `, [rangeStart, rangeEnd]);
     const outOfStockList = await pool.query(`
-      SELECT id, name, category, stock_quantity, low_stock_threshold, units_per_pack, unit_label
-      FROM products WHERE stock_quantity <= 0
-      ORDER BY name ASC
-    `);
+      SELECT p.id, p.name, p.category, p.stock_quantity, p.low_stock_threshold,
+             p.units_per_pack, p.unit_label,
+             COALESCE(SUM(si.quantity), 0) AS qty_sold
+      FROM products p
+      LEFT JOIN sale_items si ON si.product_id = p.id
+      LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+        AND s.created_at >= $1 AND s.created_at < $2
+      WHERE p.stock_quantity <= 0
+      GROUP BY p.id ORDER BY p.name ASC
+    `, [rangeStart, rangeEnd]);
 
     res.json({
       total_stock_value: Number(stockValue.rows[0].value),
