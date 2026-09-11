@@ -36,11 +36,15 @@ function downloadCsv(filename, rows) {
 }
 
 /* Export combined low-stock + out-of-stock items as a PDF, grouped by category */
-/* Weekly restock suggestion: 1-week cover based on sales in the selected range.
-   needed = max(weekly sales - stock on hand, threshold gap, 0), rounded up to packs. */
-function suggestOrder(p, days) {
+/* Weekly restock suggestion: 1-week cover based on the Products page sales
+   (qty sold per product in the same range). needed = max(weekly sales - stock
+   on hand, threshold gap, 0), rounded up to packs. */
+function suggestOrder(p, days, soldMap) {
+  const sold = p.id != null && soldMap[Number(p.id)] !== undefined
+    ? Number(soldMap[Number(p.id)])
+    : Number(p.qty_sold || 0);
   const weeks = Math.max(Number(days) / 7, 1 / 7);
-  const weekly = Number(p.qty_sold || 0) / weeks;
+  const weekly = sold / weeks;
   const stock = Number(p.stock_quantity || 0);
   const threshold = Number(p.low_stock_threshold ?? 0);
   const needed = Math.max(Math.ceil(weekly - stock - 1e-9), Math.ceil(threshold - stock - 1e-9), 0);
@@ -84,6 +88,18 @@ async function exportRestockPdf(data, start, end) {
     return;
   }
 
+  // Use the exact numbers from the Products page (same range) for suggestions.
+  let soldMap = {};
+  try {
+    const r = await apiFetch(`/reports/product-sales?start=${start}&end=${end}`);
+    const j = await r.json();
+    if (r.ok && Array.isArray(j.top_products)) {
+      soldMap = Object.fromEntries(j.top_products.map((t) => [Number(t.id), Number(t.qty_sold || 0)]));
+    }
+  } catch {
+    // fall back to the per-item qty_sold from the inventory payload
+  }
+
   // Group by category, sort categories A–Z and items by stock then name
   const groups = {};
   items.forEach((p) => {
@@ -114,7 +130,7 @@ async function exportRestockPdf(data, start, end) {
       startY: y,
       head: [['Product', 'Stock', 'Sold/wk', 'To Buy', 'Status']],
       body: list.map((p) => {
-        const s = suggestOrder(p, rangeDays);
+        const s = suggestOrder(p, rangeDays, soldMap);
         return [
           p.name,
           String(p.stock_quantity ?? 0),
