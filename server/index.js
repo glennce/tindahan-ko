@@ -773,6 +773,77 @@ app.get('/api/utang/summary', requireAuth, async (req, res) => {
   }
 });
 
+// One customer's itemized debt statement: every charge with its products
+// (camel, coke, noodles...) plus payments, so the total can be accounted for.
+app.get('/api/utang/:customerId/statement', requireAuth, async (req, res) => {
+  if (!/^\d+$/.test(req.params.customerId)) {
+    return res.status(400).json({ error: 'Invalid customer id' });
+  }
+  try {
+    const cust = await pool.query(
+      `SELECT c.*, COALESCE(latest.balance_after, 0) AS balance
+       FROM customers c
+       LEFT JOIN LATERAL (
+         SELECT balance_after FROM utang_transactions
+         WHERE customer_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1
+       ) latest ON true
+       WHERE c.id = $1`,
+      [req.params.customerId]
+    );
+    if (cust.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
+    const txns = await pool.query(
+      `SELECT * FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at ASC, id ASC`,
+      [req.params.customerId]
+    );
+    const charges = txns.rows.filter((t) => t.type === 'charge');
+    const payments = txns.rows.filter((t) => t.type === 'payment');
+    const saleIds = [...new Set(charges.map((c) => c.sale_id).filter(Boolean))];
+    const itemsBySale = {};
+    if (saleIds.length > 0) {
+      const items = await pool.query(
+        `SELECT si.sale_id, si.quantity, si.unit_price, si.subtotal,
+                COALESCE(p.name, 'Deleted product') AS product_name
+         FROM sale_items si
+         LEFT JOIN products p ON p.id = si.product_id
+         WHERE si.sale_id = ANY($1)
+         ORDER BY si.sale_id ASC, si.id ASC`,
+        [saleIds]
+      );
+      for (const it of items.rows) {
+        (itemsBySale[it.sale_id] = itemsBySale[it.sale_id] || []).push({
+          product_name: it.product_name,
+          quantity: Number(it.quantity),
+          unit_price: Number(it.unit_price),
+          subtotal: Number(it.subtotal),
+        });
+      }
+    }
+    res.json({
+      customer: cust.rows[0],
+      charges: charges.map((c) => ({
+        id: c.id,
+        sale_id: c.sale_id,
+        created_at: c.created_at,
+        amount: Number(c.amount),
+        note: c.note,
+        items: c.sale_id ? (itemsBySale[c.sale_id] || []) : [],
+      })),
+      payments: payments.map((p) => ({
+        id: p.id,
+        created_at: p.created_at,
+        amount: Number(p.amount),
+        payment_method: p.payment_method,
+        note: p.note,
+      })),
+      total_charged: charges.reduce((s, c) => s + Number(c.amount), 0),
+      total_paid: payments.reduce((s, p) => s + Number(p.amount), 0),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to build debt statement' });
+  }
+});
+
 // One customer's full transaction history
 app.get('/api/utang/:customerId', requireAuth, async (req, res) => {
   if (!/^\d+$/.test(req.params.customerId)) {

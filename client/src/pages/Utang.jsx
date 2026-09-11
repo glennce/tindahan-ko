@@ -2,9 +2,21 @@ import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import PaymentModal from '../components/PaymentModal';
 import { useToast } from '../context/ToastContext';
-import { Eye } from 'lucide-react';
+import { Eye, Download } from 'lucide-react';
 
 const UTANG_API = '/utang';
+
+function downloadCsv(filename, rows) {
+  // \ufeff BOM first so Excel opens UTF-8 correctly
+  const csv = '﻿' + rows.map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function initials(name) {
   return name.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase();
@@ -24,6 +36,7 @@ function Utang() {
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [debtSale, setDebtSale] = useState(null);
   const [loadingDebtSale, setLoadingDebtSale] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const { showToast } = useToast();
 
   const loadAll = () => {
@@ -82,6 +95,65 @@ function Utang() {
       showToast(err.message, 'error');
     } finally {
       setLoadingDebtSale(false);
+    }
+  };
+
+  // Export what this customer STILL owes (outstanding charges only, not settled
+  // history): every unpaid charge itemized so they can see their debts.
+  // Oldest charges are treated as paid first (FIFO), so the list covers the
+  // current balance from the newest charges backwards.
+  const handleExportStatement = async () => {
+    if (!selectedCustomer) return;
+    setExporting(true);
+    try {
+      const res = await apiFetch(`${UTANG_API}/${selectedCustomer.customer_id}/statement`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Export failed');
+      const money = (n) => Number(n || 0).toFixed(2);
+      const day = (t) => new Date(t).toLocaleDateString();
+      // FIFO: payments settle the oldest charges first
+      let remaining = Number(data.total_paid || 0);
+      const outstanding = [];
+      for (const c of data.charges) {
+        const amt = Number(c.amount || 0);
+        const covered = Math.min(remaining, amt);
+        remaining -= covered;
+        const unpaid = amt - covered;
+        if (unpaid > 0.005) outstanding.push({ ...c, unpaid, partial: covered > 0.005 });
+      }
+      const rows = [
+        ['Tindahan Ko - Outstanding Debt'],
+        ['Customer', data.customer.name],
+        ['Generated', new Date().toLocaleString()],
+        ['Outstanding Balance (PHP)', money(data.customer.balance)],
+        [],
+        ['OUTSTANDING CHARGES - What you still owe'],
+        ['Date', 'Sale #', 'Product', 'Qty', 'Unit Price (PHP)', 'Subtotal (PHP)'],
+      ];
+      if (outstanding.length === 0) {
+        rows.push(['No outstanding debt — all settled.']);
+      }
+      for (const c of outstanding) {
+        const saleRef = c.sale_id ? `#${c.sale_id}` : '—';
+        if (c.items.length === 0) {
+          rows.push([day(c.created_at), saleRef, c.note || 'Charge', '', '', money(c.unpaid)]);
+        } else {
+          for (const it of c.items) {
+            rows.push([day(c.created_at), saleRef, it.product_name, it.quantity, money(it.unit_price), money(it.subtotal)]);
+          }
+          rows.push(['', '', '', '', c.partial ? `Still unpaid (of ${money(c.amount)})` : 'Charge total (PHP)', money(c.unpaid)]);
+        }
+      }
+      if (outstanding.length > 0) {
+        rows.push(['', '', '', '', 'Total Still Unpaid (PHP)', money(outstanding.reduce((s, c) => s + c.unpaid, 0))]);
+      }
+      const safeName = String(data.customer.name).replace(/\s+/g, '-');
+      downloadCsv(`outstanding-debt-${safeName}-${new Date().toISOString().slice(0, 10)}.csv`, rows);
+      showToast('Outstanding debt exported');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -192,7 +264,16 @@ function Utang() {
                 </div>
               </div>
 
-              <h3 className="text-sm font-medium text-on-surface-variant mb-2">Transaction History</h3>
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="text-sm font-medium text-on-surface-variant">Transaction History</h3>
+                <button
+                  onClick={handleExportStatement}
+                  disabled={exporting}
+                  className="border border-outline-variant text-primary text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-50"
+                >
+                  <Download size={14} /> {exporting ? 'Exporting...' : 'Export Excel'}
+                </button>
+              </div>
               <div className="space-y-1 max-h-64 overflow-y-auto mb-4">
                 {history.length === 0 && (
                   <p className="text-on-surface-variant text-sm text-center py-4">No history yet.</p>
