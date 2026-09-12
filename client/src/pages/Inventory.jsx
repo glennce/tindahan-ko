@@ -44,7 +44,7 @@ function Inventory() {
   const [quickCounts, setQuickCounts] = useState({});
   const [quickReason, setQuickReason] = useState('unrecorded_sale');
   const [quickNotes, setQuickNotes] = useState('');
-  const [quickSavingId, setQuickSavingId] = useState(null);
+  const [bulkSaving, setBulkSaving] = useState(false);
   const [auditSearch, setAuditSearch] = useState('');
   const [auditProductSearch, setAuditProductSearch] = useState('');
   const [auditProductCategory, setAuditProductCategory] = useState('All');
@@ -88,26 +88,48 @@ function Inventory() {
     apiFetch('/stock-adjustments/summary').then((res) => res.json()).then(setAuditSummary).catch(() => {});
   };
 
-  const handleQuickSave = async (product) => {
-    const raw = quickCounts[product.id];
-    if (raw === '' || raw == null || Number(raw) < 0) { showToast('Enter a valid physical count', 'error'); return; }
-    setQuickSavingId(product.id);
+  // One button updates every entered shelf count at once
+  const quickPendingCount = Object.values(quickCounts).filter((v) => v !== '' && v != null).length;
+  const handleBulkSave = async () => {
+    const entries = Object.entries(quickCounts).filter(([, v]) => v !== '' && v != null);
+    if (entries.length === 0) { showToast('Enter at least one shelf count', 'error'); return; }
+    const byId = Object.fromEntries(products.map((p) => [String(p.id), p]));
+    const invalid = entries.filter(([, v]) => { const n = Number(v); return !Number.isFinite(n) || n < 0; });
+    if (invalid.length > 0) {
+      showToast(`Invalid count for: ${invalid.map(([id]) => byId[id]?.name || `#${id}`).join(', ')}`, 'error');
+      return;
+    }
+    setBulkSaving(true);
     try {
-      const res = await apiFetch('/stock-adjustments', {
+      const res = await apiFetch('/stock-adjustments/bulk', {
         method: 'POST',
-        body: JSON.stringify({ product_id: Number(product.id), counted_qty: Number(raw), reason: quickReason, notes: quickNotes }),
+        body: JSON.stringify({
+          items: entries.map(([id, v]) => ({ product_id: Number(id), counted_qty: Number(v) })),
+          reason: quickReason,
+          notes: quickNotes,
+        }),
       });
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error || 'Audit failed');
-      const diff = Number(result.difference);
-      setQuickCounts((prev) => ({ ...prev, [product.id]: '' }));
+      if (!res.ok) throw new Error(result.error || 'Bulk update failed');
+      const savedIds = new Set((result.saved || []).map((s) => String(s.product_id)));
+      const skippedIds = new Set((result.skipped || []).map((s) => String(s.product_id)));
+      setQuickCounts((prev) => {
+        const next = { ...prev };
+        for (const id of [...savedIds, ...skippedIds]) delete next[id];
+        return next;
+      });
       fetchProducts();
       fetchAudits();
-      showToast(diff < 0 ? `Shortage of ${Math.abs(diff)} recorded — stock corrected` : `Overage of ${diff} recorded — stock corrected`);
+      const skipped = (result.skipped || []).length;
+      showToast(
+        skipped > 0
+          ? `Updated ${savedIds.size} product${savedIds.size === 1 ? '' : 's'} (${skipped} unchanged — skipped)`
+          : `Updated ${savedIds.size} product${savedIds.size === 1 ? '' : 's'} — stocks corrected`
+      );
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
-      setQuickSavingId(null);
+      setBulkSaving(false);
     }
   };
 
@@ -384,7 +406,6 @@ function Inventory() {
                   {g.items.map((p) => {
                     const raw = quickCounts[p.id];
                     const diff = raw === '' || raw == null ? null : Number(raw) - Number(p.stock_quantity);
-                    const saving = quickSavingId === p.id;
                     return (
                       <div key={p.id} className="flex items-center gap-2 border border-outline-variant rounded-lg px-3 py-2">
                         <div className="flex-1 min-w-0">
@@ -399,20 +420,20 @@ function Inventory() {
                           type="number" min="0" value={raw ?? ''}
                           onChange={(e) => setQuickCounts((prev) => ({ ...prev, [p.id]: e.target.value }))}
                           placeholder="Shelf"
-                          className="w-20 border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
+                          className="w-24 border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
                         />
-                        <button
-                          onClick={() => handleQuickSave(p)} disabled={saving}
-                          className="bg-primary text-on-primary text-sm font-medium px-3 py-1.5 rounded-lg disabled:opacity-50 shrink-0"
-                        >
-                          {saving ? '...' : 'Save'}
-                        </button>
                       </div>
                     );
                   })}
                 </div>
               </div>
             ))}
+            <button
+              onClick={handleBulkSave} disabled={bulkSaving || quickPendingCount === 0}
+              className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg disabled:opacity-50 mt-1"
+            >
+              {bulkSaving ? 'Updating...' : quickPendingCount > 0 ? `Update All (${quickPendingCount})` : 'Update All'}
+            </button>
           </div>
 
           <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">

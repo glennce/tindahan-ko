@@ -1643,6 +1643,54 @@ app.post('/api/stock-adjustments', requireAuth, requireRole('owner'), async (req
   }
 });
 
+// Bulk shelf count: update many products in one tap. Items with no variance
+// are skipped (not errors); unknown products abort the whole batch.
+app.post('/api/stock-adjustments/bulk', requireAuth, requireRole('owner'), async (req, res) => {
+  const { items, reason, notes } = req.body;
+  const validReasons = ['unrecorded_sale', 'theft', 'damaged', 'expired', 'miscount_correction', 'supplier_shortage', 'return_correction', 'other'];
+  const useReason = validReasons.includes(reason) ? reason : 'unrecorded_sale';
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'No counts to save' });
+  }
+  if (items.length > 500) return res.status(400).json({ error: 'Too many items at once (max 500)' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const saved = [];
+    const skipped = [];
+    for (const it of items) {
+      const counted = Number(it.counted_qty);
+      if (!it.product_id || !Number.isFinite(counted) || counted < 0) {
+        throw new Error('Each count needs a product and a quantity of 0 or more');
+      }
+      const prod = await client.query('SELECT * FROM products WHERE id = $1 FOR UPDATE', [it.product_id]);
+      if (prod.rows.length === 0) throw new Error(`Product #${it.product_id} not found`);
+      const p = prod.rows[0];
+      const systemQty = Number(p.stock_quantity);
+      const diff = counted - systemQty;
+      if (diff === 0) {
+        skipped.push({ product_id: p.id, product_name: p.name });
+        continue;
+      }
+      const costImpact = diff * Number(p.cost_price || 0);
+      await client.query('UPDATE products SET stock_quantity = $1 WHERE id = $2', [counted, p.id]);
+      const log = await client.query(
+        `INSERT INTO stock_adjustments (product_id, product_name, system_qty, counted_qty, difference, reason, notes, cost_impact, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [p.id, p.name, systemQty, counted, diff, useReason, notes || null, costImpact, req.user.id]
+      );
+      saved.push(log.rows[0]);
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ saved, skipped });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message || 'Failed to save counts' });
+  } finally {
+    client.release();
+  }
+});
+
 async function computeExpectedCash(openingCash, startTime, endTime, client = pool, expenseStart = null) {
   // Sales/utang count from startTime, but expenses can start later (after a
   // drawer reset, pre-reset expenses such as a manual "zeroing" entry are ignored).
