@@ -41,10 +41,15 @@ function Inventory() {
   const [view, setView] = useState('products');
   const [adjustments, setAdjustments] = useState([]);
   const [auditSummary, setAuditSummary] = useState(null);
-  const [auditForm, setAuditForm] = useState({ product_id: '', counted_qty: '', reason: 'unrecorded_sale', notes: '' });
+  const [quickCounts, setQuickCounts] = useState({});
+  const [quickReason, setQuickReason] = useState('unrecorded_sale');
+  const [quickNotes, setQuickNotes] = useState('');
+  const [quickSavingId, setQuickSavingId] = useState(null);
   const [auditSearch, setAuditSearch] = useState('');
   const [auditProductSearch, setAuditProductSearch] = useState('');
   const [auditProductCategory, setAuditProductCategory] = useState('All');
+  const [auditPage, setAuditPage] = useState(1);
+  const AUDIT_PER_PAGE = 20;
 
   const fetchProducts = () => {
     setLoading(true);
@@ -83,24 +88,26 @@ function Inventory() {
     apiFetch('/stock-adjustments/summary').then((res) => res.json()).then(setAuditSummary).catch(() => {});
   };
 
-  const handleAuditSave = async (e) => {
-    e?.preventDefault();
-    if (!auditForm.product_id) { showToast('Select a product to audit', 'error'); return; }
-    if (auditForm.counted_qty === '' || Number(auditForm.counted_qty) < 0) { showToast('Enter a valid physical count', 'error'); return; }
+  const handleQuickSave = async (product) => {
+    const raw = quickCounts[product.id];
+    if (raw === '' || raw == null || Number(raw) < 0) { showToast('Enter a valid physical count', 'error'); return; }
+    setQuickSavingId(product.id);
     try {
       const res = await apiFetch('/stock-adjustments', {
         method: 'POST',
-        body: JSON.stringify({ product_id: Number(auditForm.product_id), counted_qty: Number(auditForm.counted_qty), reason: auditForm.reason, notes: auditForm.notes }),
+        body: JSON.stringify({ product_id: Number(product.id), counted_qty: Number(raw), reason: quickReason, notes: quickNotes }),
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Audit failed');
       const diff = Number(result.difference);
-      setAuditForm({ product_id: '', counted_qty: '', reason: 'unrecorded_sale', notes: '' });
+      setQuickCounts((prev) => ({ ...prev, [product.id]: '' }));
       fetchProducts();
       fetchAudits();
       showToast(diff < 0 ? `Shortage of ${Math.abs(diff)} recorded — stock corrected` : `Overage of ${diff} recorded — stock corrected`);
     } catch (err) {
       showToast(err.message, 'error');
+    } finally {
+      setQuickSavingId(null);
     }
   };
 
@@ -112,6 +119,10 @@ function Inventory() {
   useEffect(() => {
     setPage(1);
   }, [search, activeCategory]);
+
+  useEffect(() => {
+    setAuditPage(1);
+  }, [auditSearch]);
 
   const openAddModal = () => {
     setEditingProduct(null);
@@ -202,22 +213,25 @@ function Inventory() {
     return { label: 'Available', className: 'bg-secondary-container text-secondary' };
   } 
 
-  const selectedAuditProduct = products.find((p) => String(p.id) === String(auditForm.product_id));
-  const auditVariance = selectedAuditProduct && auditForm.counted_qty !== ''
-    ? Number(auditForm.counted_qty) - Number(selectedAuditProduct.stock_quantity)
-    : null;
   const filteredAudits = adjustments.filter((a) =>
     !auditSearch || (a.product_name || '').toLowerCase().includes(auditSearch.toLowerCase()) || (a.reason || '').toLowerCase().includes(auditSearch.toLowerCase())
   );
-  const auditProductOptions = products.filter((p) => {
+  const auditTotalPages = Math.max(Math.ceil(filteredAudits.length / AUDIT_PER_PAGE), 1);
+  const paginatedAudits = filteredAudits.slice((auditPage - 1) * AUDIT_PER_PAGE, auditPage * AUDIT_PER_PAGE);
+  // Quick-count list: same products, grouped by category for fast shelf updates
+  const quickList = products.filter((p) => {
     const q = auditProductSearch.trim().toLowerCase();
     const matchesSearch = !q ||
       p.name.toLowerCase().includes(q) ||
       (p.sku || '').toLowerCase().includes(q) ||
       (p.category || '').toLowerCase().includes(q);
-    const matchesCategory = auditProductCategory === 'All' || p.category === auditProductCategory;
+    const matchesCategory = auditProductCategory === 'All' || (p.category || '') === auditProductCategory;
     return matchesSearch && matchesCategory;
   });
+  const quickGroups = [...categories.filter((c) => c !== 'All'), ''];
+  const quickVisibleGroups = quickGroups
+    .map((c) => ({ name: c || 'Uncategorized', items: quickList.filter((p) => (p.category || '') === c) }))
+    .filter((g) => g.items.length > 0);
 
   return (
     <div>
@@ -335,87 +349,70 @@ function Inventory() {
           )}
 
           <div className="bg-surface border border-outline-variant rounded-xl p-4 lg:p-6">
-            <h2 className="font-semibold text-on-surface mb-3">Record a physical count</h2>
-            <form onSubmit={handleAuditSave} className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <div className="lg:col-span-2">
-                <label className="text-sm text-on-surface-variant">Find product to audit</label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1 mb-2">
-                  <input
-                    type="text"
-                    placeholder="Search name, SKU, or category..."
-                    value={auditProductSearch}
-                    onChange={(e) => {
-                      const q = e.target.value;
-                      setAuditProductSearch(q);
-                      setAuditForm((f) => {
-                        if (!f.product_id) return f;
-                        const stillThere = products.some((p) =>
-                          String(p.id) === String(f.product_id) &&
-                          (p.name.toLowerCase().includes(q.trim().toLowerCase()) ||
-                            (p.sku || '').toLowerCase().includes(q.trim().toLowerCase()) ||
-                            (p.category || '').toLowerCase().includes(q.trim().toLowerCase())) &&
-                          (auditProductCategory === 'All' || p.category === auditProductCategory)
-                        );
-                        return stillThere ? f : { ...f, product_id: '' };
-                      });
-                    }}
-                    className="border border-outline-variant rounded-lg px-3 py-2 text-sm"
-                  />
-                  <select value={auditProductCategory} onChange={(e) => {
-                    const c = e.target.value;
-                    setAuditProductCategory(c);
-                    setAuditForm((f) => {
-                      if (!f.product_id) return f;
-                      const stillThere = products.some((p) =>
-                        String(p.id) === String(f.product_id) &&
-                        (c === 'All' || p.category === c)
-                      );
-                      return stillThere ? f : { ...f, product_id: '' };
-                    });
-                  }} className="border border-outline-variant rounded-lg px-3 py-2 text-sm">
-                    {categories.map((c) => (
-                      <option key={c} value={c}>{c === 'All' ? 'All categories' : c}</option>
-                    ))}
-                  </select>
+            <h2 className="font-semibold text-on-surface mb-1">Quick shelf count</h2>
+            <p className="text-xs text-on-surface-variant mb-3">Type what you actually see on the shelf and hit Save — system stock corrects instantly and the gap is logged below.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+              <input
+                type="text"
+                placeholder="Search name, SKU, or category..."
+                value={auditProductSearch}
+                onChange={(e) => setAuditProductSearch(e.target.value)}
+                className="border border-outline-variant rounded-lg px-3 py-2 text-sm"
+              />
+              <select value={auditProductCategory} onChange={(e) => setAuditProductCategory(e.target.value)} className="border border-outline-variant rounded-lg px-3 py-2 text-sm">
+                {categories.map((c) => (
+                  <option key={c} value={c}>{c === 'All' ? 'All categories' : c}</option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-1">
+              <select value={quickReason} onChange={(e) => setQuickReason(e.target.value)} className="border border-outline-variant rounded-lg px-3 py-2 text-sm">
+                {AUDIT_REASONS.map((r) => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
+                ))}
+              </select>
+              <input type="text" value={quickNotes} onChange={(e) => setQuickNotes(e.target.value)} placeholder="Note for all saves (optional)" className="border border-outline-variant rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <p className="text-xs text-on-surface-variant mb-3">Gap reason + note above apply to every save below.</p>
+            {quickVisibleGroups.length === 0 && (
+              <p className="text-sm text-on-surface-variant text-center py-4">No products match — clear the search or pick another category.</p>
+            )}
+            {quickVisibleGroups.map((g) => (
+              <div key={g.name} className="mb-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-on-surface-variant mb-1">{g.name} ({g.items.length})</h3>
+                <div className="space-y-1.5">
+                  {g.items.map((p) => {
+                    const raw = quickCounts[p.id];
+                    const diff = raw === '' || raw == null ? null : Number(raw) - Number(p.stock_quantity);
+                    const saving = quickSavingId === p.id;
+                    return (
+                      <div key={p.id} className="flex items-center gap-2 border border-outline-variant rounded-lg px-3 py-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-on-surface truncate">{p.name}</p>
+                          <p className="text-xs text-on-surface-variant">System: {p.stock_quantity}
+                            {diff !== null && !Number.isNaN(diff) && diff !== 0 && (
+                              <span className={`font-medium ${diff < 0 ? 'text-error' : 'text-secondary'}`}> → {diff > 0 ? `+${diff}` : diff}</span>
+                            )}
+                          </p>
+                        </div>
+                        <input
+                          type="number" min="0" value={raw ?? ''}
+                          onChange={(e) => setQuickCounts((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                          placeholder="Shelf"
+                          className="w-20 border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
+                        />
+                        <button
+                          onClick={() => handleQuickSave(p)} disabled={saving}
+                          className="bg-primary text-on-primary text-sm font-medium px-3 py-1.5 rounded-lg disabled:opacity-50 shrink-0"
+                        >
+                          {saving ? '...' : 'Save'}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
-                <label className="text-sm text-on-surface-variant">Product ({auditProductOptions.length} found)</label>
-                <select value={auditForm.product_id} onChange={(e) => setAuditForm((f) => ({ ...f, product_id: e.target.value }))} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
-                  <option value="">Select product...</option>
-                  {auditProductOptions.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} — system: {p.stock_quantity}</option>
-                  ))}
-                </select>
-                {auditProductOptions.length === 0 && (
-                  <p className="text-xs text-on-surface-variant mt-1">No products match — clear the search or pick another category.</p>
-                )}
               </div>
-              <div>
-                <label className="text-sm text-on-surface-variant">System stock</label>
-                <input type="text" disabled value={selectedAuditProduct ? selectedAuditProduct.stock_quantity : '—'} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 bg-surface-container-low" />
-              </div>
-              <div>
-                <label className="text-sm text-on-surface-variant">Physical count (actual on shelf)</label>
-                <input type="number" min="0" value={auditForm.counted_qty} onChange={(e) => setAuditForm((f) => ({ ...f, counted_qty: e.target.value }))} placeholder="e.g. 12" className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1" />
-              </div>
-              <div>
-                <label className="text-sm text-on-surface-variant">What happened to the gap?</label>
-                <select value={auditForm.reason} onChange={(e) => setAuditForm((f) => ({ ...f, reason: e.target.value }))} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
-                  {AUDIT_REASONS.map((r) => (
-                    <option key={r.value} value={r.value}>{r.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-sm text-on-surface-variant">Note (optional)</label>
-                <input type="text" value={auditForm.notes} onChange={(e) => setAuditForm((f) => ({ ...f, notes: e.target.value }))} placeholder="e.g. cctv checked, shelf recount..." className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1" />
-              </div>
-              {auditVariance !== null && auditVariance !== 0 && (
-                <p className={`lg:col-span-2 text-sm font-medium ${auditVariance < 0 ? 'text-error' : 'text-secondary'}`}>
-                  Variance: {auditVariance > 0 ? `+${auditVariance}` : auditVariance} pcs {auditVariance < 0 ? 'short — will deduct from system stock' : 'over — will add to system stock'}
-                </p>
-              )}
-              <button type="submit" className="lg:col-span-2 w-full bg-primary text-on-primary font-semibold py-3 rounded-lg">Save count & correct stock</button>
-            </form>
+            ))}
           </div>
 
           <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
@@ -429,7 +426,7 @@ function Inventory() {
                   <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">System → Counted</th><th className="px-4 py-3">Variance</th><th className="px-4 py-3">Reason</th><th className="px-4 py-3">By</th></tr>
                 </thead>
                 <tbody>
-                  {filteredAudits.map((a) => (
+                  {paginatedAudits.map((a) => (
                     <tr key={a.id} className="border-t border-outline-variant">
                       <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">{new Date(a.created_at).toLocaleString()}</td>
                       <td className="px-4 py-3 text-on-surface font-medium">{a.product_name}{a.notes ? <span className="block text-xs font-normal text-on-surface-variant">{a.notes}</span> : null}</td>
@@ -442,6 +439,28 @@ function Inventory() {
                   {filteredAudits.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-on-surface-variant">No audits yet. Do your first physical count above.</td></tr>}
                 </tbody>
               </table>
+            </div>
+            <div className="flex justify-between items-center px-4 py-3 text-sm text-on-surface-variant border-t border-outline-variant">
+              <span>
+                Showing {filteredAudits.length === 0 ? 0 : (auditPage - 1) * AUDIT_PER_PAGE + 1}–{Math.min(auditPage * AUDIT_PER_PAGE, filteredAudits.length)} of {filteredAudits.length}
+              </span>
+              <div className="flex gap-1 items-center">
+                <button
+                  disabled={auditPage <= 1}
+                  onClick={() => setAuditPage((p) => p - 1)}
+                  className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <span className="px-2 py-1">{auditPage} / {auditTotalPages}</span>
+                <button
+                  disabled={auditPage >= auditTotalPages}
+                  onClick={() => setAuditPage((p) => p + 1)}
+                  className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           </div>
         </div>
