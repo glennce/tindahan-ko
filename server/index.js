@@ -1467,6 +1467,49 @@ app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, 
   }
 });
 
+// Bulk restock: add stock to many products in one tap (audit-style).
+// Body: { items: [{ product_id, quantity (pieces), cost_price (per piece, optional) }] }
+app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'No stock-in entries to save' });
+  }
+  if (items.length > 500) return res.status(400).json({ error: 'Too many items at once (max 500)' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const saved = [];
+    for (const it of items) {
+      const qty = Number(it.quantity);
+      if (!it.product_id || !Number.isFinite(qty) || qty <= 0) {
+        throw new Error('Each entry needs a product and a quantity greater than 0');
+      }
+      const cost = it.cost_price === '' || it.cost_price == null ? null : Number(it.cost_price);
+      if (cost !== null && (!Number.isFinite(cost) || cost < 0)) {
+        throw new Error('Cost price cannot be negative');
+      }
+      const result = await client.query(
+        `UPDATE products
+         SET stock_quantity = stock_quantity + $1,
+             cost_price = COALESCE($2, cost_price)
+         WHERE id = $3
+         RETURNING *`,
+        [qty, cost, it.product_id]
+      );
+      if (result.rows.length === 0) throw new Error(`Product #${it.product_id} not found`);
+      saved.push(result.rows[0]);
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ saved, count: saved.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Failed to save stock-in' });
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (req, res) => {
   const { quantity, cost_price } = req.body;
   const qty = Number(quantity);

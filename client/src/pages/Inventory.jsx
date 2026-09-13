@@ -1,7 +1,6 @@
 import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 import ProductModal from '../components/ProductModal';
-import StockInModal from '../components/StockInModal';
 import RepackModal from '../components/RepackModal';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
@@ -32,7 +31,6 @@ function Inventory() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
-  const [stockInOpen, setStockInOpen] = useState(false);
   const [repackOpen, setRepackOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const { showToast } = useToast();
@@ -50,6 +48,11 @@ function Inventory() {
   const [auditProductCategory, setAuditProductCategory] = useState('All');
   const [auditPage, setAuditPage] = useState(1);
   const AUDIT_PER_PAGE = 20;
+  // Bulk Stock In (audit-style): one row per product, one save for all
+  const [stockinRows, setStockinRows] = useState({});
+  const [stockinSearch, setStockinSearch] = useState('');
+  const [stockinCategory, setStockinCategory] = useState('All');
+  const [stockinSaving, setStockinSaving] = useState(false);
 
   const fetchProducts = () => {
     setLoading(true);
@@ -175,20 +178,70 @@ function Inventory() {
     }
   };
 
-  const handleStockIn = async (productId, data) => {
+  const setStockinField = (id, field, value) => {
+    setStockinRows((prev) => ({ ...prev, [id]: { packs: '', loose: '', costPack: '', ...(prev[id] || {}), [field]: value } }));
+  };
+
+  const stockinPiecesFor = (p, row) => {
+    if (!row) return 0;
+    const packs = Number(row.packs) || 0;
+    const loose = Number(String(row.loose).replace(/[^0-9]/g, '')) || 0;
+    if (packs < 0 || loose < 0) return -1;
+    return p.units_per_pack ? packs * p.units_per_pack + loose : packs + loose;
+  };
+
+  const stockinCostPerPieceFor = (p, row) => {
+    if (!row?.costPack) return null;
+    const packPrice = Number(row.costPack);
+    if (!Number.isFinite(packPrice) || packPrice < 0) return -1;
+    if (p.units_per_pack) return Math.round((packPrice / p.units_per_pack) * 10000) / 10000;
+    return packPrice;
+  };
+
+  // One button adds stock to every filled-in row at once
+  const stockinPendingCount = Object.entries(stockinRows).filter(([id, row]) => {
+    if (!row) return false;
+    const p = products.find((x) => String(x.id) === String(id));
+    if (!p) return false;
+    return stockinPiecesFor(p, row) > 0;
+  }).length;
+
+  const handleBulkStockIn = async () => {
+    const byId = Object.fromEntries(products.map((p) => [String(p.id), p]));
+    const items = [];
+    for (const [id, row] of Object.entries(stockinRows)) {
+      const p = byId[id];
+      if (!p || !row) continue;
+      const pieces = stockinPiecesFor(p, row);
+      if (pieces <= 0) continue;
+      const costPerPiece = stockinCostPerPieceFor(p, row);
+      if (pieces < 0 || costPerPiece === -1) {
+        showToast(`Invalid entry for: ${p.name}`, 'error');
+        return;
+      }
+      items.push({ product_id: Number(id), quantity: pieces, cost_price: costPerPiece });
+    }
+    if (items.length === 0) { showToast('Enter at least one stock-in quantity', 'error'); return; }
+    setStockinSaving(true);
     try {
-      const res = await apiFetch(`${API}/${productId}/restock`, {
+      const res = await apiFetch(`${API}/restock/bulk`, {
         method: 'POST',
-        body: JSON.stringify(data),
+        body: JSON.stringify({ items }),
       });
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error || 'Restock failed');
+      if (!res.ok) throw new Error(result.error || 'Stock-in failed');
+      const savedIds = new Set((result.saved || []).map((s) => String(s.id)));
+      setStockinRows((prev) => {
+        const next = { ...prev };
+        for (const id of savedIds) delete next[id];
+        return next;
+      });
       fetchProducts();
-      showToast('Stock updated');
-      return true;
+      showToast(`Stocked in ${savedIds.size} product${savedIds.size === 1 ? '' : 's'}`);
     } catch (err) {
       showToast(err.message, 'error');
-      throw err;
+    } finally {
+      setStockinSaving(false);
     }
   };
 
@@ -254,6 +307,19 @@ function Inventory() {
   const quickVisibleGroups = quickGroups
     .map((c) => ({ name: c || 'Uncategorized', items: quickList.filter((p) => (p.category || '') === c) }))
     .filter((g) => g.items.length > 0);
+  // Bulk stock-in list: same products, same grouping as audit
+  const stockinList = products.filter((p) => {
+    const q = stockinSearch.trim().toLowerCase();
+    const matchesSearch = !q ||
+      p.name.toLowerCase().includes(q) ||
+      (p.sku || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q);
+    const matchesCategory = stockinCategory === 'All' || (p.category || '') === stockinCategory;
+    return matchesSearch && matchesCategory;
+  });
+  const stockinVisibleGroups = quickGroups
+    .map((c) => ({ name: c || 'Uncategorized', items: stockinList.filter((p) => (p.category || '') === c) }))
+    .filter((g) => g.items.length > 0);
 
   return (
     <div>
@@ -306,7 +372,7 @@ function Inventory() {
         )}
         <div className="flex gap-2">
           <button
-            onClick={() => setStockInOpen(true)}
+            onClick={() => setView('stockin')}
             className="border border-primary text-primary font-medium px-4 py-2 rounded-lg"
           >
             Stock In
@@ -327,7 +393,7 @@ function Inventory() {
       </div>
 
       <div className="flex gap-1 mb-6">
-        {[{ key: 'products', label: 'Products' }, { key: 'audit', label: `Stock Audit${auditSummary?.shortage_counts ? ` (${auditSummary.shortage_counts})` : ''}` }].map((t) => (
+        {[{ key: 'products', label: 'Products' }, { key: 'stockin', label: `Stock In${stockinPendingCount > 0 ? ` (${stockinPendingCount})` : ''}` }, { key: 'audit', label: `Stock Audit${auditSummary?.shortage_counts ? ` (${auditSummary.shortage_counts})` : ''}` }].map((t) => (
           <button
             key={t.key}
             onClick={() => setView(t.key)}
@@ -337,6 +403,110 @@ function Inventory() {
           </button>
         ))}
       </div>
+
+      {view === 'stockin' && (
+        <div className="space-y-4">
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+            <h2 className="font-semibold text-blue-800 text-sm mb-1">Restock many products at once</h2>
+            <p className="text-blue-700 text-xs">Fill in packs / loose pieces / cost per pack for every delivery below, then hit one button — same inputs as the old Stock In form, just all on one page.</p>
+          </div>
+
+          <div className="bg-surface border border-outline-variant rounded-xl p-4 lg:p-6">
+            <h2 className="font-semibold text-on-surface mb-1">Bulk stock in</h2>
+            <p className="text-xs text-on-surface-variant mb-3">Enter what arrived and hit Save — stocks add up instantly.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+              <input
+                type="text"
+                placeholder="Search name, SKU, or category..."
+                value={stockinSearch}
+                onChange={(e) => setStockinSearch(e.target.value)}
+                className="border border-outline-variant rounded-lg px-3 py-2 text-sm"
+              />
+              <select value={stockinCategory} onChange={(e) => setStockinCategory(e.target.value)} className="border border-outline-variant rounded-lg px-3 py-2 text-sm">
+                {categories.map((c) => (
+                  <option key={c} value={c}>{c === 'All' ? 'All categories' : c}</option>
+                ))}
+              </select>
+            </div>
+            {stockinVisibleGroups.length === 0 && (
+              <p className="text-sm text-on-surface-variant text-center py-4">No products match — clear the search or pick another category.</p>
+            )}
+            {stockinVisibleGroups.map((g) => (
+              <div key={g.name} className="mb-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-on-surface-variant mb-1">{g.name} ({g.items.length})</h3>
+                <div className="space-y-1.5">
+                  {g.items.map((p) => {
+                    const row = stockinRows[p.id] || { packs: '', loose: '', costPack: '' };
+                    const pieces = stockinPiecesFor(p, row);
+                    const costPerPiece = stockinCostPerPieceFor(p, row);
+                    const hasEntry = pieces > 0;
+                    return (
+                      <div key={p.id} className={`border rounded-lg px-3 py-2 ${hasEntry ? 'border-primary bg-primary-container/20' : 'border-outline-variant'}`}>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-on-surface truncate">{p.name}</p>
+                            <p className="text-xs text-on-surface-variant">Now: {formatStock(p)}
+                              {hasEntry && (
+                                <span className="font-medium text-secondary"> → +{pieces} = {Number(p.stock_quantity) + pieces}</span>
+                              )}
+                            </p>
+                          </div>
+                          {p.units_per_pack ? (
+                            <span className="text-[11px] text-on-surface-variant whitespace-nowrap">{p.units_per_pack} {p.unit_label}s/pack</span>
+                          ) : null}
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 mt-2">
+                          <div>
+                            <label className="text-[11px] font-medium text-on-surface-variant">{p.units_per_pack ? 'Per Pack' : 'Packs / Qty'}</label>
+                            <input
+                              type="number" min="0" value={row.packs}
+                              onChange={(e) => setStockinField(p.id, 'packs', e.target.value)}
+                              placeholder="0"
+                              className="w-full border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[11px] font-medium text-on-surface-variant">{p.units_per_pack ? `Loose ${p.unit_label}s` : 'Loose pcs'}</label>
+                            <input
+                              type="text" inputMode="numeric" value={row.loose}
+                              onChange={(e) => setStockinField(p.id, 'loose', e.target.value.replace(/[^0-9]/g, ''))}
+                              placeholder="0"
+                              className="w-full border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[11px] font-medium text-on-surface-variant">{p.units_per_pack ? 'Cost/pack ₱' : 'Cost ₱'}</label>
+                            <input
+                              type="number" min="0" step="0.01" value={row.costPack}
+                              onChange={(e) => setStockinField(p.id, 'costPack', e.target.value)}
+                              placeholder={p.units_per_pack ? `₱${(Number(p.cost_price) * p.units_per_pack).toFixed(2)}` : `₱${p.cost_price}`}
+                              className="w-full border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
+                            />
+                          </div>
+                        </div>
+                        {row.costPack && costPerPiece > 0 && (
+                          <p className="text-[11px] text-on-surface-variant mt-1">
+                            = ₱{Number(costPerPiece).toFixed(2)} per {p.units_per_pack ? (p.unit_label || 'pc') : 'pc'}. Leave blank to keep current cost.
+                          </p>
+                        )}
+                        {!row.costPack && (
+                          <p className="text-[11px] text-on-surface-variant mt-1">Leave cost blank to keep current cost.</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            <button
+              onClick={handleBulkStockIn} disabled={stockinSaving || stockinPendingCount === 0}
+              className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg disabled:opacity-50 mt-1"
+            >
+              {stockinSaving ? 'Saving...' : stockinPendingCount > 0 ? `Confirm Stock In (${stockinPendingCount})` : 'Confirm Stock In'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {view === 'audit' && (
         <div className="space-y-4">
@@ -595,13 +765,6 @@ function Inventory() {
         onSave={handleSave}
         initialData={editingProduct}
         knownCategories={categories.filter((c) => c !== 'All')}
-      />
-
-      <StockInModal
-        isOpen={stockInOpen}
-        onClose={() => setStockInOpen(false)}
-        onSave={handleStockIn}
-        products={products}
       />
 
       <RepackModal
