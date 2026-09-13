@@ -1377,12 +1377,12 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
         topParams.push(category);
       }
       topProducts = await pool.query(`
-        SELECT p.id, p.name, p.category, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
+        SELECT p.id, p.name, p.category, p.stock_quantity, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id AND s.status='completed'
         JOIN products p ON p.id = si.product_id
         WHERE s.created_at >= $1 AND s.created_at < $2 ${topCategoryFilter}
-        GROUP BY p.id, p.name, p.category
+        GROUP BY p.id, p.name, p.category, p.stock_quantity
         ORDER BY qty_sold DESC
       `, topParams);
     }
@@ -1392,7 +1392,7 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
       total_qty: Number(total.rows[0].total_qty),
       total_revenue: Number(total.rows[0].total_revenue),
       total_transactions: Number(total.rows[0].total_transactions),
-      top_products: topProducts.rows.map(r => ({ ...r, qty_sold: Number(r.qty_sold), revenue: Number(r.revenue) })),
+      top_products: topProducts.rows.map(r => ({ ...r, qty_sold: Number(r.qty_sold), revenue: Number(r.revenue), stock_quantity: Number(r.stock_quantity ?? 0) })),
     });
   } catch (err) {
     console.error(err);

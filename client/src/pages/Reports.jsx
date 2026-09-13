@@ -516,6 +516,15 @@ function ProductReport({ start, end, onDatesChange }) {
     downloadCsv(`product-${category || 'all'}-${granularity}-${start}-to-${end}.csv`, rows);
   };
 
+  const handleExportProducts = (productsToExport) => {
+    if (!productsToExport || productsToExport.length === 0) return;
+    const rows = [
+      ['Product', 'Category', 'Qty Sold', 'Revenue', 'Available'],
+      ...productsToExport.map((p) => [p.name, p.category || '', p.qty_sold, Number(p.revenue).toFixed(2), p.stock_quantity ?? 0]),
+    ];
+    downloadCsv(`products-${category || 'all'}-${start}-to-${end}.csv`, rows);
+  };
+
   return (
     <div className="space-y-4">
       <div className="bg-surface border border-outline-variant rounded-xl p-4">
@@ -598,9 +607,11 @@ function ProductReport({ start, end, onDatesChange }) {
             <div className="bg-surface border border-outline-variant rounded-xl p-4">
               <div className="flex justify-between items-center mb-3">
                 <h3 className="font-semibold text-on-surface">{category ? `Products in ${category} — ${data.top_products.length} products` : `All Products in Range — ${data.top_products.length} products`}</h3>
-                <button onClick={() => setShowAll(!showAll)} className="text-primary text-sm font-medium">
-                  {showAll ? 'Show Top 10' : `Show All (${data.top_products.length})`}
-                </button>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => setShowAll(!showAll)} className="text-primary text-sm font-medium">
+                    {showAll ? 'Show Top 10' : `Show All (${data.top_products.length})`}
+                  </button>
+                </div>
               </div>
               <input type="text" placeholder="Search products..." value={productSearch} onChange={(e) => setProductSearch(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mb-3 text-sm" />
               {(() => {
@@ -610,12 +621,36 @@ function ProductReport({ start, end, onDatesChange }) {
                 return (
                   <>
                     {!showAll && filtered.length > 10 && <p className="text-xs text-on-surface-variant mb-2">Showing top 10 of {filtered.length} — click Show All to see all</p>}
-                    {display.map((p) => (
-                      <div key={p.id} className="flex justify-between text-sm py-2 border-t border-outline-variant">
-                        <span className="text-on-surface">{p.name} <span className="text-on-surface-variant text-xs">{p.category || ''}</span></span>
-                        <span className="text-primary font-medium">{p.qty_sold} sold · ₱{Number(p.revenue).toFixed(2)}</span>
-                      </div>
-                    ))}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm min-w-[600px]">
+                        <thead className="bg-surface-container-low text-on-surface-variant">
+                          <tr>
+                            <th className="px-4 py-2">Product</th>
+                            <th className="px-4 py-2">Qty Sold</th>
+                            <th className="px-4 py-2">Revenue</th>
+                            <th className="px-4 py-2">Available</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {display.map((p) => (
+                            <tr key={p.id} className="border-t border-outline-variant">
+                              <td className="px-4 py-2 text-on-surface">
+                                {p.name} <span className="text-on-surface-variant text-xs">{p.category || ''}</span>
+                              </td>
+                              <td className="px-4 py-2 font-medium text-on-surface">{p.qty_sold} sold</td>
+                              <td className="px-4 py-2 text-on-surface-variant">₱{Number(p.revenue).toFixed(2)}</td>
+                              <td className="px-4 py-2 text-on-surface-variant">{p.stock_quantity ?? 0} pcs</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button
+                      onClick={() => handleExportProducts(filtered)}
+                      className="text-primary text-sm font-medium mt-3 flex items-center gap-1"
+                    >
+                      <Download size={14} /> Export products CSV
+                    </button>
                   </>
                 );
               })()}
