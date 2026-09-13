@@ -467,6 +467,27 @@ function ProductReport({ start, end, onDatesChange }) {
 
   const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort();
 
+  // Fallback stock lookup from /products so Available still works
+  // even if the report API (old deployed server) doesn't return stock_quantity yet.
+  // Also provides units_per_pack / unit_label for pack formatting.
+  const stockMap = Object.fromEntries(products.map((p) => [Number(p.id), p]));
+  const getAvailable = (p) => {
+    if (p.stock_quantity !== undefined && p.stock_quantity !== null) return Number(p.stock_quantity);
+    const full = stockMap[Number(p.id)];
+    if (full?.stock_quantity !== undefined && full?.stock_quantity !== null) return Number(full.stock_quantity);
+    return 0;
+  };
+  const getFullProduct = (p) => {
+    const full = stockMap[Number(p.id)] || {};
+    return {
+      ...full,
+      ...p,
+      stock_quantity: getAvailable(p),
+      units_per_pack: p.units_per_pack ?? full.units_per_pack,
+      unit_label: p.unit_label ?? full.unit_label,
+    };
+  };
+
   const handleGranularityChange = (newGran) => {
     setGranularity(newGran);
     // Auto-adjust top date range to match granularity — day=today, week=current week, month=current month
@@ -520,7 +541,7 @@ function ProductReport({ start, end, onDatesChange }) {
     if (!productsToExport || productsToExport.length === 0) return;
     const rows = [
       ['Product', 'Category', 'Qty Sold', 'Revenue', 'Available'],
-      ...productsToExport.map((p) => [p.name, p.category || '', p.qty_sold, Number(p.revenue).toFixed(2), p.stock_quantity ?? 0]),
+      ...productsToExport.map((p) => [p.name, p.category || '', p.qty_sold, Number(p.revenue).toFixed(2), getAvailable(p)]),
     ];
     downloadCsv(`products-${category || 'all'}-${start}-to-${end}.csv`, rows);
   };
@@ -639,7 +660,7 @@ function ProductReport({ start, end, onDatesChange }) {
                               </td>
                               <td className="px-4 py-2 font-medium text-on-surface">{p.qty_sold} sold</td>
                               <td className="px-4 py-2 text-on-surface-variant">₱{Number(p.revenue).toFixed(2)}</td>
-                              <td className="px-4 py-2 text-on-surface-variant">{p.stock_quantity ?? 0} pcs</td>
+                              <td className="px-4 py-2 text-on-surface-variant">{formatStock(getFullProduct(p))}</td>
                             </tr>
                           ))}
                         </tbody>

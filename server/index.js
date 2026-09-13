@@ -1377,12 +1377,12 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
         topParams.push(category);
       }
       topProducts = await pool.query(`
-        SELECT p.id, p.name, p.category, p.stock_quantity, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
+        SELECT p.id, p.name, p.category, p.stock_quantity, p.units_per_pack, p.unit_label, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id AND s.status='completed'
         JOIN products p ON p.id = si.product_id
         WHERE s.created_at >= $1 AND s.created_at < $2 ${topCategoryFilter}
-        GROUP BY p.id, p.name, p.category, p.stock_quantity
+        GROUP BY p.id, p.name, p.category, p.stock_quantity, p.units_per_pack, p.unit_label
         ORDER BY qty_sold DESC
       `, topParams);
     }
