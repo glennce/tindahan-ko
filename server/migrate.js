@@ -45,7 +45,8 @@ const p=require('./db');
         product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
         quantity NUMERIC NOT NULL,
         unit_price NUMERIC NOT NULL,
-        subtotal NUMERIC NOT NULL
+        subtotal NUMERIC NOT NULL,
+        cost_price NUMERIC DEFAULT 0
       )`);
   await p.query(`CREATE TABLE IF NOT EXISTS utang_transactions (
         id SERIAL PRIMARY KEY,

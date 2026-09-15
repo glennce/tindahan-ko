@@ -164,6 +164,13 @@ async function ensureDB() {
     await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS cash_expenses NUMERIC DEFAULT 0`);
     await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS gcash_expenses NUMERIC DEFAULT 0`);
     await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS expected_gcash NUMERIC DEFAULT 0`);
+    // Snapshot the cost at sale time so later restocks (which update
+    // products.cost_price) can't rewrite historical profit.
+    await pool.query(`ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS cost_price NUMERIC DEFAULT 0`);
+    await pool.query(`
+      UPDATE sale_items si SET cost_price = p.cost_price
+      FROM products p WHERE p.id = si.product_id AND (si.cost_price IS NULL OR si.cost_price = 0)
+    `);
     // Drawer reset baseline: everything created before the latest reset is
     // ignored by Cash Drawer KPIs (sales/expenses/transfers still kept in history).
     await pool.query(`
@@ -476,10 +483,18 @@ app.post('/api/sales', requireAuth, async (req, res) => {
     const effectiveUnitPrice = Number(item.unit_price);
     const itemSubtotal = item.quantity * effectiveUnitPrice;
 
+    // Snapshot current cost so future restocks don't rewrite this sale's profit.
+    const costRow = await client.query(
+      `SELECT cost_price FROM products WHERE id = $1`,
+      [item.product_id]
+    );
+    if (costRow.rows.length === 0) throw new Error(`Product ${item.product_id} not found`);
+    const costAtSale = Number(costRow.rows[0].cost_price || 0);
+
     await client.query(
-      `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [sale.id, item.product_id, item.quantity, effectiveUnitPrice, itemSubtotal]
+      `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal, cost_price)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [sale.id, item.product_id, item.quantity, effectiveUnitPrice, itemSubtotal, costAtSale]
     );
 
       const stockResult = await client.query(
@@ -619,7 +634,7 @@ app.get('/api/dashboard', requireAuth, requireRole('owner'), async (req, res) =>
     `, [start, end]);
 
     const profitToday = await pool.query(`
-      SELECT COALESCE(SUM((si.unit_price - p.cost_price) * si.quantity),0) AS gross_profit,
+      SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit,
              COALESCE(SUM(si.quantity),0) AS items_sold
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
@@ -711,7 +726,7 @@ app.get('/api/dashboard/trend', requireAuth, requireRole('owner'), async (req, r
         GROUP BY bucket
         ORDER BY bucket
       `, [start, end]);
-      const map = Object.fromEntries(result.rows.map((r) => [r.bucket.toISOString().slice(0, 10), Number(r.total)]));
+      const map = Object.fromEntries(result.rows.map((r) => [dbDateToManila(r.bucket), Number(r.total)]));
 
       const trend = [];
       for (let i = days; i >= 0; i--) {
@@ -1030,14 +1045,14 @@ app.get('/api/reports', async (req, res) => {
   try {
     const totals = await pool.query(
       `SELECT COALESCE(SUM(total_amount),0) AS total_sales
-       FROM sales WHERE created_at::date BETWEEN $1 AND $2`,
+       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'`,
       [start, end]
     );
 
     const profit = await pool.query(
-      `SELECT COALESCE(SUM((si.unit_price - p.cost_price) * si.quantity),0) AS gross_profit
+      `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
        FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id
+       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
        JOIN products p ON p.id = si.product_id
        WHERE s.created_at::date BETWEEN $1 AND $2`,
       [start, end]
@@ -1051,7 +1066,7 @@ app.get('/api/reports', async (req, res) => {
 
     const trend = await pool.query(
       `SELECT created_at::date AS day, SUM(total_amount) AS total
-       FROM sales WHERE created_at::date BETWEEN $1 AND $2
+       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'
        GROUP BY day ORDER BY day`,
       [start, end]
     );
@@ -1059,7 +1074,7 @@ app.get('/api/reports', async (req, res) => {
     const categories = await pool.query(
       `SELECT COALESCE(p.category, 'Uncategorized') AS category, SUM(si.subtotal) AS revenue
        FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id
+       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
        JOIN products p ON p.id = si.product_id
        WHERE s.created_at::date BETWEEN $1 AND $2
        GROUP BY p.category
@@ -1118,7 +1133,12 @@ app.get('/api/reports/sales', requireAuth, requireRole('owner'), async (req, res
       total_sales: Number(current.rows[0].total),
       transaction_count: Number(current.rows[0].count),
       prev_total_sales: Number(previous.rows[0].total),
-      trend: trend.rows,
+      trend: trend.rows.map((r) => ({
+        ...r,
+        day: r.day instanceof Date
+          ? r.day.toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })
+          : String(r.day).slice(0, 10),
+      })),
       categories: categories.rows,
     });
   } catch (err) {
@@ -1137,7 +1157,7 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
   try {
     const grossProfit = async (s, e) => {
       const r = await pool.query(
-        `SELECT COALESCE(SUM((si.unit_price - p.cost_price) * si.quantity),0) AS gross_profit
+        `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
          FROM sale_items si
          JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
          JOIN products p ON p.id = si.product_id
@@ -1157,9 +1177,16 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
     const totalExpenses = Number(expensesResult.rows[0].total);
     const netProfit = currentGross - totalExpenses;
 
+    const salesResult = await pool.query(
+      `SELECT COALESCE(SUM(total_amount),0) AS total FROM sales
+       WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
+      [rangeStart, rangeEnd]
+    );
+    const totalSales = Number(salesResult.rows[0].total);
+
     const trend = await pool.query(
       `SELECT (s.created_at AT TIME ZONE 'Asia/Manila')::date AS day,
-              SUM((si.unit_price - p.cost_price) * si.quantity) AS profit
+              SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity) AS profit
        FROM sale_items si
        JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
        JOIN products p ON p.id = si.product_id
@@ -1172,9 +1199,15 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
       gross_profit: currentGross,
       prev_gross_profit: prevGross,
       total_expenses: totalExpenses,
+      total_sales: totalSales,
       net_profit: netProfit,
-      margin_pct: currentGross > 0 ? (currentGross / (currentGross + totalExpenses)) * 100 : 0,
-      trend: trend.rows,
+      margin_pct: totalSales > 0 ? (netProfit / totalSales) * 100 : 0,
+      trend: trend.rows.map((r) => ({
+        ...r,
+        day: r.day instanceof Date
+          ? r.day.toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })
+          : String(r.day).slice(0, 10),
+      })),
     });
   } catch (err) {
     console.error(err);
@@ -1388,7 +1421,7 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
     }
     res.json({
       granularity: gran,
-      trend: trend.rows.map(r => ({ period: r.period instanceof Date ? r.period.toISOString().slice(0,10) : r.period, qty_sold: Number(r.qty_sold), revenue: Number(r.revenue), transactions: Number(r.transactions) })),
+      trend: trend.rows.map(r => ({ period: r.period instanceof Date ? r.period.toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' }) : String(r.period).slice(0, 10), qty_sold: Number(r.qty_sold), revenue: Number(r.revenue), transactions: Number(r.transactions) })),
       total_qty: Number(total.rows[0].total_qty),
       total_revenue: Number(total.rows[0].total_revenue),
       total_transactions: Number(total.rows[0].total_transactions),
@@ -1847,6 +1880,15 @@ function addDaysToManilaDate(dateStr, deltaDays) {
   return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
 }
 
+// DATE columns come back from pg as JS Dates at midnight in the DB/server
+// timezone, so .toISOString().slice(0,10) shifts a Manila date back one day
+// (e.g. Sep 11 00:00+08 -> Sep 10 in UTC). Always format in Asia/Manila.
+function dbDateToManila(dateVal) {
+  if (dateVal == null) return null;
+  if (typeof dateVal === 'string') return dateVal.slice(0, 10);
+  return dateVal.toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+}
+
 async function ensureTodayShift() {
   const today = manilaToday();
   let result = await pool.query(`SELECT * FROM cash_shifts WHERE shift_date = $1`, [today]);
@@ -1890,7 +1932,7 @@ async function freezeStaleShifts() {
     [today]
   );
   for (const shift of stale.rows) {
-    const dateStr = shift.shift_date.toISOString().slice(0, 10);
+    const dateStr = dbDateToManila(shift.shift_date);
     // Fill missing opening from the previous counted close so the frozen
     // expected isn't missing the carried-over cash.
     let opening = shift.opening_cash;
@@ -2118,7 +2160,7 @@ app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
     const shift = shiftResult.rows[0];
     if (shift.status === 'closed') return res.status(400).json({ error: 'Shift already closed' });
 
-    const dateStr = shift.shift_date.toISOString().slice(0, 10);
+    const dateStr = dbDateToManila(shift.shift_date);
     const resetAt = await getDrawerResetAt();
     let breakdown;
     if (shift.status === 'active') {
@@ -2179,7 +2221,7 @@ async function enrichShiftRow(shift) {
     };
   }
   try {
-    const dateStr = new Date(shift.shift_date).toISOString().slice(0, 10);
+    const dateStr = dbDateToManila(shift.shift_date);
     const { start, end } = manilaDayBounds(dateStr);
     const full = await computeExpectedCash(shift.opening_cash || 0, start, end);
     const gcashReceived = full.gcash_sales + full.gcash_utang_payments;
