@@ -45,7 +45,12 @@ function SalesPOS() {
     const matchesCategory = activeCategory === 'All' || p.category === activeCategory;
     return matchesSearch && matchesCategory;
   })
-  .sort((a, b) => Number(b.total_sold) - Number(a.total_sold));
+  .sort((a, b) => {
+    const aOut = Number(a.stock_quantity) <= 0 ? 1 : 0;
+    const bOut = Number(b.stock_quantity) <= 0 ? 1 : 0;
+    if (aOut !== bOut) return aOut - bOut;
+    return Number(b.total_sold) - Number(a.total_sold);
+  });
   
     const totalPages = Math.max(Math.ceil(filteredProducts.length / PER_PAGE), 1);
     const paginatedProducts = filteredProducts.slice((page - 1) * PER_PAGE, page * PER_PAGE);
