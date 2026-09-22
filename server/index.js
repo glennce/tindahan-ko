@@ -194,6 +194,21 @@ async function ensureDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+    // Restock / stock-in history: every inventory restock is logged here
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS restock_logs (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        product_name TEXT NOT NULL,
+        qty_added NUMERIC NOT NULL,
+        old_qty NUMERIC NOT NULL,
+        new_qty NUMERIC NOT NULL,
+        old_cost NUMERIC,
+        new_cost NUMERIC,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
     // Stock audit / shrinkage tracking (sold-but-unrecorded, theft, damage, etc.)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS stock_adjustments (
@@ -1521,6 +1536,11 @@ app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async 
       if (cost !== null && (!Number.isFinite(cost) || cost < 0)) {
         throw new Error('Cost price cannot be negative');
       }
+      const before = await client.query('SELECT * FROM products WHERE id = $1 FOR UPDATE', [it.product_id]);
+      if (before.rows.length === 0) throw new Error(`Product #${it.product_id} not found`);
+      const prev = before.rows[0];
+      const oldQty = Number(prev.stock_quantity);
+      const oldCost = prev.cost_price == null ? null : Number(prev.cost_price);
       const result = await client.query(
         `UPDATE products
          SET stock_quantity = stock_quantity + $1,
@@ -1530,6 +1550,12 @@ app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async 
         [qty, cost, it.product_id]
       );
       if (result.rows.length === 0) throw new Error(`Product #${it.product_id} not found`);
+      const updated = result.rows[0];
+      await client.query(
+        `INSERT INTO restock_logs (product_id, product_name, qty_added, old_qty, new_qty, old_cost, new_cost, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [updated.id, updated.name, qty, oldQty, Number(updated.stock_quantity), oldCost, updated.cost_price == null ? null : Number(updated.cost_price), req.user.id]
+      );
       saved.push(result.rows[0]);
     }
     await client.query('COMMIT');
@@ -1551,22 +1577,58 @@ app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (
     return res.status(400).json({ error: 'Quantity must be a positive number' });
   }
 
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    await client.query('BEGIN');
+    const before = await client.query('SELECT * FROM products WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (before.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    const prev = before.rows[0];
+    const oldQty = Number(prev.stock_quantity);
+    const oldCost = prev.cost_price == null ? null : Number(prev.cost_price);
+    const cost = cost_price === '' || cost_price == null ? null : Number(cost_price);
+    if (cost !== null && (!Number.isFinite(cost) || cost < 0)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Cost price cannot be negative' });
+    }
+    const result = await client.query(
       `UPDATE products
        SET stock_quantity = stock_quantity + $1,
            cost_price = COALESCE($2, cost_price)
        WHERE id = $3
        RETURNING *`,
-      [qty, cost_price || null, req.params.id]
+      [qty, cost, req.params.id]
     );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Product not found' });
-    }
-    res.json(result.rows[0]);
+    const updated = result.rows[0];
+    await client.query(
+      `INSERT INTO restock_logs (product_id, product_name, qty_added, old_qty, new_qty, old_cost, new_cost, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [updated.id, updated.name, qty, oldQty, Number(updated.stock_quantity), oldCost, updated.cost_price == null ? null : Number(updated.cost_price), req.user.id]
+    );
+    await client.query('COMMIT');
+    res.json(updated);
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error(err);
     res.status(500).json({ error: 'Failed to restock product' });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/restock-logs', requireAuth, requireRole('owner'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT rl.*, u.name AS created_by_name FROM restock_logs rl
+       LEFT JOIN users u ON u.id = rl.created_by
+       ORDER BY rl.created_at DESC LIMIT 100`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load restock history' });
   }
 });
 

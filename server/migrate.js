@@ -128,6 +128,18 @@ const p=require('./db');
         created_by INTEGER REFERENCES users(id),
         created_at TIMESTAMPTZ DEFAULT NOW()
       )`);
+  await p.query(`CREATE TABLE IF NOT EXISTS restock_logs (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        product_name TEXT NOT NULL,
+        qty_added NUMERIC NOT NULL,
+        old_qty NUMERIC NOT NULL,
+        new_qty NUMERIC NOT NULL,
+        old_cost NUMERIC,
+        new_cost NUMERIC,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
   console.log('migration done');
   const r=await p.query(`SELECT column_name FROM information_schema.columns WHERE table_name='expenses'`);
   console.log(r.rows);
