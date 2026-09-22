@@ -57,6 +57,10 @@ function Inventory() {
   const [restockSearch, setRestockSearch] = useState('');
   const [restockPage, setRestockPage] = useState(1);
   const RESTOCK_PER_PAGE = 20;
+  const [stockinPage, setStockinPage] = useState(1);
+  const STOCKIN_PER_PAGE = 20;
+  const [auditCountPage, setAuditCountPage] = useState(1);
+  const AUDIT_COUNT_PER_PAGE = 20;
 
   const fetchProducts = () => {
     setLoading(true);
@@ -157,6 +161,14 @@ function Inventory() {
   useEffect(() => {
     setRestockPage(1);
   }, [restockSearch]);
+
+  useEffect(() => {
+    setStockinPage(1);
+  }, [stockinSearch, stockinCategory]);
+
+  useEffect(() => {
+    setAuditCountPage(1);
+  }, [auditProductSearch, auditProductCategory]);
 
   const openAddModal = () => {
     setEditingProduct(null);
@@ -314,8 +326,13 @@ function Inventory() {
     return matchesSearch && matchesCategory;
   });
   const quickGroups = [...categories.filter((c) => c !== 'All'), ''];
+  // Quick-count list is paginated (same 20/page pattern as Products) so long
+  // catalogs stay usable; category headers are kept for items on this page.
+  const auditCountTotalPages = Math.max(Math.ceil(quickList.length / AUDIT_COUNT_PER_PAGE), 1);
+  const safeAuditCountPage = Math.min(auditCountPage, auditCountTotalPages);
+  const paginatedQuickList = quickList.slice((safeAuditCountPage - 1) * AUDIT_COUNT_PER_PAGE, safeAuditCountPage * AUDIT_COUNT_PER_PAGE);
   const quickVisibleGroups = quickGroups
-    .map((c) => ({ name: c || 'Uncategorized', items: quickList.filter((p) => (p.category || '') === c) }))
+    .map((c) => ({ name: c || 'Uncategorized', items: paginatedQuickList.filter((p) => (p.category || '') === c) }))
     .filter((g) => g.items.length > 0);
   // Bulk stock-in list: same products, same grouping as audit
   const stockinList = products.filter((p) => {
@@ -327,8 +344,12 @@ function Inventory() {
     const matchesCategory = stockinCategory === 'All' || (p.category || '') === stockinCategory;
     return matchesSearch && matchesCategory;
   });
+  // Paginate the stock-in entry list (20/page, same as Products); category headers kept for this page.
+  const stockinTotalPages = Math.max(Math.ceil(stockinList.length / STOCKIN_PER_PAGE), 1);
+  const safeStockinPage = Math.min(stockinPage, stockinTotalPages);
+  const paginatedStockinList = stockinList.slice((safeStockinPage - 1) * STOCKIN_PER_PAGE, safeStockinPage * STOCKIN_PER_PAGE);
   const stockinVisibleGroups = quickGroups
-    .map((c) => ({ name: c || 'Uncategorized', items: stockinList.filter((p) => (p.category || '') === c) }))
+    .map((c) => ({ name: c || 'Uncategorized', items: paginatedStockinList.filter((p) => (p.category || '') === c) }))
     .filter((g) => g.items.length > 0);
   // Restock audit history
   const filteredRestocks = restockLogs.filter((r) =>
@@ -514,6 +535,28 @@ function Inventory() {
                 </div>
               </div>
             ))}
+            <div className="flex justify-between items-center mt-2 mb-1 text-sm text-on-surface-variant">
+              <span>
+                Showing {stockinList.length === 0 ? 0 : (safeStockinPage - 1) * STOCKIN_PER_PAGE + 1}–{Math.min(safeStockinPage * STOCKIN_PER_PAGE, stockinList.length)} of {stockinList.length}
+              </span>
+              <div className="flex gap-1 items-center">
+                <button
+                  disabled={safeStockinPage <= 1}
+                  onClick={() => setStockinPage((p) => p - 1)}
+                  className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <span className="px-2 py-1">{safeStockinPage} / {stockinTotalPages}</span>
+                <button
+                  disabled={safeStockinPage >= stockinTotalPages}
+                  onClick={() => setStockinPage((p) => p + 1)}
+                  className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
             <button
               onClick={handleBulkStockIn} disabled={stockinSaving || stockinPendingCount === 0}
               className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg disabled:opacity-50 mt-1"
@@ -667,6 +710,28 @@ function Inventory() {
                 </div>
               </div>
             ))}
+            <div className="flex justify-between items-center mt-2 mb-1 text-sm text-on-surface-variant">
+              <span>
+                Showing {quickList.length === 0 ? 0 : (safeAuditCountPage - 1) * AUDIT_COUNT_PER_PAGE + 1}–{Math.min(safeAuditCountPage * AUDIT_COUNT_PER_PAGE, quickList.length)} of {quickList.length}
+              </span>
+              <div className="flex gap-1 items-center">
+                <button
+                  disabled={safeAuditCountPage <= 1}
+                  onClick={() => setAuditCountPage((p) => p - 1)}
+                  className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <span className="px-2 py-1">{safeAuditCountPage} / {auditCountTotalPages}</span>
+                <button
+                  disabled={safeAuditCountPage >= auditCountTotalPages}
+                  onClick={() => setAuditCountPage((p) => p + 1)}
+                  className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
             <button
               onClick={handleBulkSave} disabled={bulkSaving || quickPendingCount === 0}
               className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg disabled:opacity-50 mt-1"
