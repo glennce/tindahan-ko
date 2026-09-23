@@ -25,7 +25,16 @@ function initials(name) {
 const historyIcon = {
   charge: { bg: 'bg-error-container', color: 'text-error' },
   payment: { bg: 'bg-secondary-container', color: 'text-secondary' },
+  cash_loan: { bg: 'bg-orange-100', color: 'text-orange-700' },
+  cash_loan_payment: { bg: 'bg-blue-100', color: 'text-blue-700' },
 };
+
+function historyLabel(h) {
+  if (h.type === 'cash_loan') return 'Cash Loan (monitoring only)';
+  if (h.type === 'cash_loan_payment') return `Cash Repayment (${h.payment_method || 'cash'})`;
+  if (h.type === 'payment') return `Payment (${h.payment_method || 'cash'})`;
+  return 'Charge';
+}
 
 function Utang() {
   const [ledger, setLedger] = useState([]);
@@ -37,6 +46,20 @@ function Utang() {
   const [debtSale, setDebtSale] = useState(null);
   const [loadingDebtSale, setLoadingDebtSale] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState('all');
+  const [lendOpen, setLendOpen] = useState(false);
+  const [lendCustomerId, setLendCustomerId] = useState('');
+  const [lendAmount, setLendAmount] = useState('');
+  const [lendNote, setLendNote] = useState('');
+  const [lendError, setLendError] = useState(null);
+  const [lendSaving, setLendSaving] = useState(false);
+  const [repayOpen, setRepayOpen] = useState(false);
+  const [repayCustomerId, setRepayCustomerId] = useState('');
+  const [repayAmount, setRepayAmount] = useState('');
+  const [repayMethod, setRepayMethod] = useState('cash');
+  const [repayNote, setRepayNote] = useState('');
+  const [repayError, setRepayError] = useState(null);
+  const [repaySaving, setRepaySaving] = useState(false);
   const { showToast } = useToast();
 
   const loadAll = () => {
@@ -59,6 +82,7 @@ function Utang() {
 
   const selectCustomer = (customer) => {
     setSelectedCustomer(customer);
+    setHistoryFilter('all');
     apiFetch(`${UTANG_API}/${customer.customer_id}`)
       .then((res) => res.json())
       .then((d) => setHistory(Array.isArray(d) ? d : []))
@@ -84,6 +108,98 @@ function Utang() {
     }
   };
 
+  // Breakdown of the selected customer's balance. Cash loans are tracked
+  // with type='cash_loan' / 'cash_loan_payment', so they can be separated
+  // from store credit (charges/payments) without extra backend calls.
+  const cashLoaned = history
+    .filter((h) => h.type === 'cash_loan')
+    .reduce((s, h) => s + Number(h.amount || 0), 0);
+  const cashRepaid = history
+    .filter((h) => h.type === 'cash_loan_payment')
+    .reduce((s, h) => s + Number(h.amount || 0), 0);
+  const cashBalance = Math.max(cashLoaned - cashRepaid, 0);
+  const storeBalance = selectedCustomer
+    ? Math.max(Number(selectedCustomer.balance || 0) - cashBalance, 0)
+    : 0;
+
+  const visibleHistory = history.filter((h) => {
+    if (historyFilter === 'store') return h.type === 'charge' || h.type === 'payment';
+    if (historyFilter === 'cash') return h.type === 'cash_loan' || h.type === 'cash_loan_payment';
+    return true;
+  });
+
+  const openLend = () => {
+    setLendCustomerId(selectedCustomer ? String(selectedCustomer.customer_id) : '');
+    setLendAmount('');
+    setLendNote('');
+    setLendError(null);
+    setLendOpen(true);
+  };
+
+  const openCashRepay = () => {
+    setRepayCustomerId(selectedCustomer ? String(selectedCustomer.customer_id) : '');
+    setRepayAmount('');
+    setRepayMethod('cash');
+    setRepayNote('');
+    setRepayError(null);
+    setRepayOpen(true);
+  };
+
+  const handleLendCash = async (e) => {
+    e?.preventDefault();
+    setLendError(null);
+    if (!lendCustomerId) { setLendError('Select a customer.'); return; }
+    if (!lendAmount || Number(lendAmount) <= 0) { setLendError('Enter a valid amount.'); return; }
+    setLendSaving(true);
+    try {
+      const res = await apiFetch(`${UTANG_API}/cash-loan`, {
+        method: 'POST',
+        body: JSON.stringify({ customer_id: Number(lendCustomerId), amount: Number(lendAmount), note: lendNote }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setLendOpen(false);
+      loadAll();
+      showToast('Cash loan recorded (monitoring only)');
+      const updated = ledger.find((c) => c.customer_id === Number(lendCustomerId));
+      if (updated) selectCustomer({ ...updated, customer_id: Number(lendCustomerId) });
+      else setSelectedCustomer(null);
+    } catch (err) {
+      setLendError(err.message);
+    } finally {
+      setLendSaving(false);
+    }
+  };
+
+  const handleCashRepay = async (e) => {
+    e?.preventDefault();
+    setRepayError(null);
+    if (!repayCustomerId) { setRepayError('Select a customer.'); return; }
+    if (!repayAmount || Number(repayAmount) <= 0) { setRepayError('Enter a valid amount.'); return; }
+    setRepaySaving(true);
+    try {
+      const res = await apiFetch(`${UTANG_API}/cash-loan/payment`, {
+        method: 'POST',
+        body: JSON.stringify({
+          customer_id: Number(repayCustomerId),
+          amount: Number(repayAmount),
+          payment_method: repayMethod,
+          note: repayNote,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setRepayOpen(false);
+      loadAll();
+      showToast('Cash repayment recorded (monitoring only)');
+      const updated = ledger.find((c) => c.customer_id === Number(repayCustomerId));
+      if (updated) selectCustomer({ ...updated, customer_id: Number(repayCustomerId) });
+    } catch (err) {
+      setRepayError(err.message);
+    } finally {
+      setRepaySaving(false);
+    }
+  };
   const viewDebtProducts = async (saleId) => {
     try {
       setLoadingDebtSale(true);
@@ -147,6 +263,30 @@ function Utang() {
       if (outstanding.length > 0) {
         rows.push(['', '', '', '', 'Total Still Unpaid (PHP)', money(outstanding.reduce((s, c) => s + c.unpaid, 0))]);
       }
+      // Cash loans are tracked separately (monitoring only, not in drawer).
+      // FIFO within cash loans: repayments settle the oldest loans first.
+      const cashLoans = data.cash_loans || [];
+      const cashRepaidTotal = Number(data.total_cash_repaid || 0);
+      let cashRemaining = cashRepaidTotal;
+      const cashOutstanding = [];
+      for (const c of cashLoans) {
+        const amt = Number(c.amount || 0);
+        const covered = Math.min(cashRemaining, amt);
+        cashRemaining -= covered;
+        const unpaid = amt - covered;
+        if (unpaid > 0.005) cashOutstanding.push({ ...c, unpaid });
+      }
+      rows.push([], ['CASH LOANS - Monitoring only (not counted in Cash Drawer)']);
+      rows.push(['Date', 'Note', 'Loaned (PHP)', 'Still Unpaid (PHP)']);
+      if (cashOutstanding.length === 0) {
+        rows.push([cashLoans.length === 0 ? 'No cash loans.' : 'All cash loans settled.']);
+      }
+      for (const c of cashOutstanding) {
+        rows.push([day(c.created_at), c.note || 'Cash loan', money(c.amount), money(c.unpaid)]);
+      }
+      if (cashOutstanding.length > 0) {
+        rows.push(['', '', 'Cash Still Unpaid (PHP)', money(cashOutstanding.reduce((s, c) => s + c.unpaid, 0))]);
+      }
       const safeName = String(data.customer.name).replace(/\s+/g, '-');
       downloadCsv(`outstanding-debt-${safeName}-${new Date().toISOString().slice(0, 10)}.csv`, rows);
       showToast('Outstanding debt exported');
@@ -170,22 +310,35 @@ function Utang() {
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-on-surface">Utang Management</h1>
-          <p className="text-on-surface-variant">Track and manage customer credit balances.</p>
+          <p className="text-on-surface-variant">Track store credit and cash loans. Cash loans are monitoring only — not counted in Cash Drawer.</p>
         </div>
-        <button
-          onClick={() => { setSelectedCustomer(null); setPaymentModalOpen(true); }}
-          className="bg-primary-container text-on-primary font-medium px-4 py-2 rounded-full text-sm"
-        >
-          + New Payment
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={openLend}
+            className="border border-outline-variant text-on-surface font-medium px-4 py-2 rounded-full text-sm"
+          >
+            + Lend Cash
+          </button>
+          <button
+            onClick={() => { setSelectedCustomer(null); setPaymentModalOpen(true); }}
+            className="bg-primary-container text-on-primary font-medium px-4 py-2 rounded-full text-sm"
+          >
+            + New Payment
+          </button>
+        </div>
       </div>
 
       {/* Metric cards */}
       {summary && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className="bg-surface border border-outline-variant rounded-xl p-4">
             <p className="text-on-surface-variant text-sm">Total Outstanding</p>
-            <p className="text-2xl font-bold text-on-surface">₱{summary.total_outstanding.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-on-surface">₱{Number(summary.total_outstanding || 0).toFixed(2)}</p>
+          </div>
+          <div className="bg-surface border border-outline-variant rounded-xl p-4">
+            <p className="text-on-surface-variant text-sm">Cash Loans <span className="text-xs">(monitoring)</span></p>
+            <p className="text-2xl font-bold text-on-surface">₱{Number(summary.cash_loans_outstanding || 0).toFixed(2)}</p>
+            <p className="text-on-surface-variant text-xs">Not in Cash Drawer</p>
           </div>
           <div className="bg-surface border border-outline-variant rounded-xl p-4">
             <p className="text-on-surface-variant text-sm">Customers w/ Balance</p>
@@ -193,7 +346,7 @@ function Utang() {
           </div>
           <div className="bg-surface border border-outline-variant rounded-xl p-4">
             <p className="text-on-surface-variant text-sm">Payments Today</p>
-            <p className="text-2xl font-bold text-on-surface">₱{summary.payments_today.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-on-surface">₱{Number(summary.payments_today || 0).toFixed(2)}</p>
             <p className="text-on-surface-variant text-xs">{summary.payments_today_count} transactions</p>
           </div>
         </div>
@@ -247,7 +400,7 @@ function Utang() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4 bg-surface-container-low p-4 rounded-lg border border-outline-variant mb-4">
+              <div className="grid grid-cols-2 gap-4 bg-surface-container-low p-4 rounded-lg border border-outline-variant mb-3">
                 <div>
                   <p className="text-xs text-on-surface-variant">Current Balance</p>
                   <p className="text-lg font-bold text-error">₱{Number(selectedCustomer.balance).toFixed(2)}</p>
@@ -264,8 +417,31 @@ function Utang() {
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div className="border border-outline-variant rounded-lg p-3">
+                  <p className="text-xs text-on-surface-variant">Store Credit</p>
+                  <p className="text-base font-bold text-error">₱{storeBalance.toFixed(2)}</p>
+                </div>
+                <div className="border border-outline-variant rounded-lg p-3">
+                  <p className="text-xs text-on-surface-variant">Cash Loan <span className="text-[10px]">(monitoring)</span></p>
+                  <p className="text-base font-bold text-on-surface">₱{cashBalance.toFixed(2)}</p>
+                </div>
+              </div>
+
               <div className="flex justify-between items-center mb-2">
-                <h3 className="text-sm font-medium text-on-surface-variant">Transaction History</h3>
+                <div className="flex gap-1">
+                  {['all', 'store', 'cash'].map((f) => (
+                    <button
+                      key={f}
+                      onClick={() => setHistoryFilter(f)}
+                      className={`text-xs font-medium px-3 py-1.5 rounded-full capitalize ${
+                        historyFilter === f ? 'bg-primary-container text-on-primary' : 'text-on-surface-variant hover:bg-surface-container-low'
+                      }`}
+                    >
+                      {f === 'all' ? 'All' : f === 'store' ? 'Store' : 'Cash'}
+                    </button>
+                  ))}
+                </div>
                 <button
                   onClick={handleExportStatement}
                   disabled={exporting}
@@ -274,22 +450,24 @@ function Utang() {
                   <Download size={14} /> {exporting ? 'Exporting...' : 'Export Excel'}
                 </button>
               </div>
+              <h3 className="text-sm font-medium text-on-surface-variant mb-1">Transaction History</h3>
               <div className="space-y-1 max-h-64 overflow-y-auto mb-4">
-                {history.length === 0 && (
+                {visibleHistory.length === 0 && (
                   <p className="text-on-surface-variant text-sm text-center py-4">No history yet.</p>
                 )}
-                {history.map((h) => {
-                  const icon = historyIcon[h.type];
+                {visibleHistory.map((h) => {
+                  const icon = historyIcon[h.type] || historyIcon.charge;
                   const canViewProducts = h.sale_id && h.type === 'charge';
+                  const isDecrease = h.type === 'payment' || h.type === 'cash_loan_payment';
                   return (
                     <div key={h.id} className="flex justify-between items-center py-2 border-t border-outline-variant gap-2">
                       <div className="flex items-center gap-3 flex-1 min-w-0">
                         <div className={`w-8 h-8 rounded-full ${icon.bg} ${icon.color} flex items-center justify-center text-xs font-bold shrink-0`}>
-                          {h.type === 'payment' ? '₱' : '+'}
+                          {h.type === 'cash_loan' ? '₱' : isDecrease ? '₱' : '+'}
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="text-on-surface text-sm capitalize truncate">
-                            {h.type === 'payment' ? `Payment (${h.payment_method || 'cash'})` : 'Charge'}
+                            {historyLabel(h)}
                           </p>
                           <p className="text-on-surface-variant text-xs truncate">
                             {new Date(h.created_at).toLocaleDateString()}
@@ -300,8 +478,8 @@ function Utang() {
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <div className="text-right">
-                          <p className={h.type === 'payment' ? 'text-secondary font-medium text-sm' : 'text-error font-medium text-sm'}>
-                            {h.type === 'payment' ? '-' : '+'}₱{Number(h.amount).toFixed(2)}
+                          <p className={isDecrease ? 'text-secondary font-medium text-sm' : 'text-error font-medium text-sm'}>
+                            {isDecrease ? '-' : '+'}₱{Number(h.amount).toFixed(2)}
                           </p>
                           <p className="text-on-surface-variant text-xs">Bal: ₱{Number(h.balance_after).toFixed(2)}</p>
                         </div>
@@ -321,12 +499,30 @@ function Utang() {
                 })}
               </div>
 
-              <button
-                onClick={() => setPaymentModalOpen(true)}
-                className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg"
-              >
-                Record Payment
-              </button>
+              <div className="space-y-2">
+                <button
+                  onClick={() => setPaymentModalOpen(true)}
+                  className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg"
+                >
+                  Record Payment
+                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={openLend}
+                    className="w-full border border-outline-variant text-on-surface font-medium py-2.5 rounded-lg text-sm"
+                  >
+                    Lend Cash
+                  </button>
+                  <button
+                    onClick={openCashRepay}
+                    disabled={cashBalance <= 0}
+                    className="w-full border border-outline-variant text-on-surface font-medium py-2.5 rounded-lg text-sm disabled:opacity-50"
+                  >
+                    Cash Repayment
+                  </button>
+                </div>
+                <p className="text-xs text-on-surface-variant text-center">Cash loans are monitoring only — not counted in Cash Drawer.</p>
+              </div>
             </>
           )}
         </div>
@@ -339,6 +535,137 @@ function Utang() {
         customers={ledger}
         preselectedCustomer={selectedCustomer}
       />
+
+      {lendOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface rounded-xl w-full max-w-md shadow-lg overflow-hidden">
+            <div className="px-4 py-3 border-b border-outline-variant flex justify-between items-center">
+              <h2 className="font-semibold text-on-surface">Lend Cash</h2>
+              <button onClick={() => setLendOpen(false)} className="text-on-surface-variant text-xl">✕</button>
+            </div>
+            <form onSubmit={handleLendCash} className="p-4 space-y-3">
+              <p className="text-xs text-on-surface-variant bg-surface-container-low border border-outline-variant rounded-lg p-2">
+                Monitoring only — cash loans are NOT counted in Cash Drawer.
+              </p>
+              <div>
+                <label className="text-sm font-medium text-on-surface-variant">Customer</label>
+                <select
+                  value={lendCustomerId}
+                  onChange={(e) => setLendCustomerId(e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+                >
+                  <option value="">Select customer...</option>
+                  {ledger.map((c) => (
+                    <option key={c.customer_id} value={c.customer_id}>
+                      {c.name} — ₱{Number(c.balance).toFixed(2)} owed
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium text-on-surface-variant">Amount Lent</label>
+                <input
+                  type="number" step="0.01" min="0"
+                  value={lendAmount}
+                  onChange={(e) => setLendAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 text-lg font-semibold"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-on-surface-variant">Note (Optional)</label>
+                <textarea
+                  value={lendNote}
+                  onChange={(e) => setLendNote(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. Emergency cash loan..."
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 resize-none"
+                />
+              </div>
+              {lendError && <p className="text-error text-sm">{lendError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setLendOpen(false)} className="px-4 py-2 rounded-lg border border-outline-variant text-on-surface-variant">
+                  Cancel
+                </button>
+                <button type="submit" disabled={lendSaving} className="px-4 py-2 rounded-lg bg-primary text-on-primary font-medium disabled:opacity-50">
+                  {lendSaving ? 'Saving...' : 'Save Loan'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {repayOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface rounded-xl w-full max-w-md shadow-lg overflow-hidden">
+            <div className="px-4 py-3 border-b border-outline-variant flex justify-between items-center">
+              <h2 className="font-semibold text-on-surface">Cash Repayment</h2>
+              <button onClick={() => setRepayOpen(false)} className="text-on-surface-variant text-xl">✕</button>
+            </div>
+            <form onSubmit={handleCashRepay} className="p-4 space-y-3">
+              <p className="text-xs text-on-surface-variant bg-surface-container-low border border-outline-variant rounded-lg p-2">
+                Monitoring only — repayments are NOT counted in Cash Drawer.
+              </p>
+              <div>
+                <label className="text-sm font-medium text-on-surface-variant">Customer</label>
+                <select
+                  value={repayCustomerId}
+                  onChange={(e) => setRepayCustomerId(e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+                >
+                  <option value="">Select customer...</option>
+                  {ledger.filter((c) => Number(c.balance) > 0).map((c) => (
+                    <option key={c.customer_id} value={c.customer_id}>
+                      {c.name} — ₱{Number(c.balance).toFixed(2)} owed
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium text-on-surface-variant">Amount Repaid</label>
+                <input
+                  type="number" step="0.01" min="0"
+                  value={repayAmount}
+                  onChange={(e) => setRepayAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 text-lg font-semibold"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-on-surface-variant">Received As (info only)</label>
+                <select
+                  value={repayMethod}
+                  onChange={(e) => setRepayMethod(e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
+                >
+                  <option value="cash">Cash</option>
+                  <option value="gcash">GCash</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium text-on-surface-variant">Note (Optional)</label>
+                <textarea
+                  value={repayNote}
+                  onChange={(e) => setRepayNote(e.target.value)}
+                  rows={2}
+                  placeholder="Enter any notes here..."
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 resize-none"
+                />
+              </div>
+              {repayError && <p className="text-error text-sm">{repayError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setRepayOpen(false)} className="px-4 py-2 rounded-lg border border-outline-variant text-on-surface-variant">
+                  Cancel
+                </button>
+                <button type="submit" disabled={repaySaving} className="px-4 py-2 rounded-lg bg-primary text-on-primary font-medium disabled:opacity-50">
+                  {repaySaving ? 'Saving...' : 'Save Repayment'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {debtSale && (
         <>

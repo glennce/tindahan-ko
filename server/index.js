@@ -796,11 +796,22 @@ app.get('/api/utang/summary', requireAuth, async (req, res) => {
       FROM utang_transactions
       WHERE type = 'payment' AND created_at::date = CURRENT_DATE
     `);
+    // Cash loans are monitoring-only (drawer-excluded): report them separately
+    const cashStats = await pool.query(`
+      SELECT COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS loaned,
+             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS repaid,
+             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan' AND created_at::date = CURRENT_DATE), 0) AS loaned_today,
+             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment' AND created_at::date = CURRENT_DATE), 0) AS repaid_today
+      FROM utang_transactions
+    `);
     res.json({
       total_outstanding: Number(outstanding.rows[0].total),
       customers_with_balance: Number(outstanding.rows[0].customer_count),
       payments_today: Number(paymentsToday.rows[0].total),
       payments_today_count: Number(paymentsToday.rows[0].count),
+      cash_loans_outstanding: Number(cashStats.rows[0].loaned) - Number(cashStats.rows[0].repaid),
+      cash_loaned_today: Number(cashStats.rows[0].loaned_today),
+      cash_loan_repaid_today: Number(cashStats.rows[0].repaid_today),
     });
   } catch (err) {
     console.error(err);
@@ -832,6 +843,8 @@ app.get('/api/utang/:customerId/statement', requireAuth, async (req, res) => {
     );
     const charges = txns.rows.filter((t) => t.type === 'charge');
     const payments = txns.rows.filter((t) => t.type === 'payment');
+    const cashLoans = txns.rows.filter((t) => t.type === 'cash_loan');
+    const cashLoanPayments = txns.rows.filter((t) => t.type === 'cash_loan_payment');
     const saleIds = [...new Set(charges.map((c) => c.sale_id).filter(Boolean))];
     const itemsBySale = {};
     if (saleIds.length > 0) {
@@ -870,8 +883,23 @@ app.get('/api/utang/:customerId/statement', requireAuth, async (req, res) => {
         payment_method: p.payment_method,
         note: p.note,
       })),
+      cash_loans: cashLoans.map((c) => ({
+        id: c.id,
+        created_at: c.created_at,
+        amount: Number(c.amount),
+        note: c.note,
+      })),
+      cash_loan_payments: cashLoanPayments.map((p) => ({
+        id: p.id,
+        created_at: p.created_at,
+        amount: Number(p.amount),
+        payment_method: p.payment_method,
+        note: p.note,
+      })),
       total_charged: charges.reduce((s, c) => s + Number(c.amount), 0),
       total_paid: payments.reduce((s, p) => s + Number(p.amount), 0),
+      total_cash_loaned: cashLoans.reduce((s, c) => s + Number(c.amount), 0),
+      total_cash_repaid: cashLoanPayments.reduce((s, p) => s + Number(p.amount), 0),
     });
   } catch (err) {
     console.error(err);
@@ -896,7 +924,9 @@ app.get('/api/utang/:customerId', requireAuth, async (req, res) => {
   }
 });
 
-// Record a payment against a customer's balance
+// Record a payment against a customer's STORE balance (product credit).
+// Store payments ARE counted in the Cash Drawer. Cash-loan repayments must
+// use /utang/cash-loan/payment instead (monitoring only, drawer-excluded).
 app.post('/api/utang/payment', requireAuth, async (req, res) => {
   const { customer_id, amount, payment_method, note } = req.body;
   if (!customer_id || !amount || amount <= 0) {
@@ -915,6 +945,23 @@ app.post('/api/utang/payment', requireAuth, async (req, res) => {
       });
     }
 
+    // Keep buckets clean: a store payment may not exceed the store-credit
+    // portion (total minus cash-loan outstanding). Anything for a cash loan
+    // should go through the cash-loan repayment endpoint instead.
+    const cashStat = await pool.query(
+      `SELECT COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS loaned,
+              COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS repaid
+       FROM utang_transactions WHERE customer_id = $1`,
+      [customer_id]
+    );
+    const cashOutstanding = Number(cashStat.rows[0].loaned) - Number(cashStat.rows[0].repaid);
+    const storeBalance = currentBalance - cashOutstanding;
+    if (Number(amount) > storeBalance + 0.005) {
+      return res.status(400).json({
+        error: `That exceeds the store-credit balance of ₱${Math.max(storeBalance, 0).toFixed(2)}. Use Cash Repayment for the cash-loan part.`,
+      });
+    }
+
     const newBalance = currentBalance - Number(amount);
 
     const method = payment_method === 'gcash' ? 'gcash' : 'cash';
@@ -927,6 +974,90 @@ app.post('/api/utang/payment', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to record payment' });
+  }
+});
+
+// Lend cash to a customer (monitoring only — NOT counted in Cash Drawer).
+// Increases the customer's utang balance using type='cash_loan', which all
+// drawer queries ignore (they only sum type='charge' / type='payment').
+app.post('/api/utang/cash-loan', requireAuth, async (req, res) => {
+  const { customer_id, amount, note } = req.body;
+  if (!customer_id || !amount || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'Valid customer_id and amount are required' });
+  }
+  try {
+    const cust = await pool.query(`SELECT id, name, credit_limit FROM customers WHERE id = $1`, [customer_id]);
+    if (cust.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
+    const lastEntry = await pool.query(
+      `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [customer_id]
+    );
+    const currentBalance = lastEntry.rows.length ? Number(lastEntry.rows[0].balance_after) : 0;
+    const newBalance = currentBalance + Number(amount);
+    const creditLimit = Number(cust.rows[0].credit_limit);
+    if (newBalance > creditLimit) {
+      const available = Math.max(creditLimit - currentBalance, 0);
+      return res.status(400).json({
+        error: `This loan exceeds ${cust.rows[0].name}'s credit limit. Available credit: ₱${available.toFixed(2)}`,
+      });
+    }
+    const result = await pool.query(
+      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note)
+       VALUES ($1, 'cash_loan', $2, $3, 'cash', $4) RETURNING *`,
+      [customer_id, Number(amount), newBalance, note || 'Cash loan']
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to record cash loan' });
+  }
+});
+
+// Repay a cash loan (monitoring only — NOT counted in Cash Drawer).
+// Uses type='cash_loan_payment', which drawer queries ignore. payment_method
+// is stored for info only (cash/gcash).
+app.post('/api/utang/cash-loan/payment', requireAuth, async (req, res) => {
+  const { customer_id, amount, payment_method, note } = req.body;
+  if (!customer_id || !amount || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'Valid customer_id and amount are required' });
+  }
+  try {
+    const lastEntry = await pool.query(
+      `SELECT balance_after FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [customer_id]
+    );
+    const currentBalance = lastEntry.rows.length ? Number(lastEntry.rows[0].balance_after) : 0;
+    const cashStat = await pool.query(
+      `SELECT COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS loaned,
+              COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS repaid
+       FROM utang_transactions WHERE customer_id = $1`,
+      [customer_id]
+    );
+    const cashOutstanding = Number(cashStat.rows[0].loaned) - Number(cashStat.rows[0].repaid);
+    if (cashOutstanding <= 0) {
+      return res.status(400).json({ error: 'This customer has no outstanding cash loan.' });
+    }
+    if (Number(amount) > cashOutstanding + 0.005) {
+      return res.status(400).json({
+        error: `Repayment exceeds cash-loan balance of ₱${cashOutstanding.toFixed(2)}.`,
+      });
+    }
+    if (Number(amount) > currentBalance + 0.005) {
+      return res.status(400).json({
+        error: `Repayment exceeds total balance of ₱${currentBalance.toFixed(2)}.`,
+      });
+    }
+    const newBalance = currentBalance - Number(amount);
+    const method = payment_method === 'gcash' ? 'gcash' : 'cash';
+    const result = await pool.query(
+      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note)
+       VALUES ($1, 'cash_loan_payment', $2, $3, $4, $5) RETURNING *`,
+      [customer_id, Number(amount), newBalance, method, note || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to record cash-loan repayment' });
   }
 });
 
@@ -957,6 +1088,24 @@ app.get('/api/transactions', requireAuth, requireRole('owner'), async (req, res)
       FROM utang_transactions ut
       JOIN customers c ON c.id = ut.customer_id
       WHERE ut.type = 'payment'
+
+      UNION ALL
+
+      SELECT 'cash_loan' AS source, ut.id, ut.created_at,
+             c.name AS customer_name, ut.amount AS amount,
+             'Cash Loan' AS type_label, 'completed' AS status
+      FROM utang_transactions ut
+      JOIN customers c ON c.id = ut.customer_id
+      WHERE ut.type = 'cash_loan'
+
+      UNION ALL
+
+      SELECT 'cash_loan_payment' AS source, ut.id, ut.created_at,
+             c.name AS customer_name, ut.amount AS amount,
+             'Cash Loan Repayment' AS type_label, 'completed' AS status
+      FROM utang_transactions ut
+      JOIN customers c ON c.id = ut.customer_id
+      WHERE ut.type = 'cash_loan_payment'
     )
   `;
 
@@ -1010,14 +1159,14 @@ app.get('/api/transactions/:source/:id', requireAuth, requireRole('owner'), asyn
       return res.json({ source: 'sale', ...sale.rows[0], items: items.rows });
     }
 
-    if (source === 'utang_payment') {
+    if (source === 'utang_payment' || source === 'cash_loan' || source === 'cash_loan_payment') {
       const payment = await pool.query(
         `SELECT ut.*, c.name AS customer_name FROM utang_transactions ut
          JOIN customers c ON c.id = ut.customer_id WHERE ut.id = $1`,
         [id]
       );
       if (payment.rows.length === 0) return res.status(404).json({ error: 'Not found' });
-      return res.json({ source: 'utang_payment', ...payment.rows[0] });
+      return res.json({ source, ...payment.rows[0] });
     }
 
     res.status(400).json({ error: 'Invalid source' });
@@ -1334,7 +1483,9 @@ app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res
     const periodActivity = await pool.query(
       `SELECT
         COALESCE(SUM(amount) FILTER (WHERE type = 'charge'), 0) AS charged,
-        COALESCE(SUM(amount) FILTER (WHERE type = 'payment'), 0) AS paid
+        COALESCE(SUM(amount) FILTER (WHERE type = 'payment'), 0) AS paid,
+        COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS cash_loaned,
+        COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS cash_repaid
        FROM utang_transactions WHERE created_at >= $1 AND created_at < $2`,
       [rangeStart, rangeEnd]
     );
@@ -1353,6 +1504,8 @@ app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res
       total_outstanding: Number(outstanding.rows[0].total),
       charged_this_period: Number(periodActivity.rows[0].charged),
       paid_this_period: Number(periodActivity.rows[0].paid),
+      cash_loaned_this_period: Number(periodActivity.rows[0].cash_loaned),
+      cash_repaid_this_period: Number(periodActivity.rows[0].cash_repaid),
       top_debtors: topDebtors.rows,
     });
   } catch (err) {
