@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import PaymentModal from '../components/PaymentModal';
+import CustomerModal from '../components/CustomerModal';
 import { useToast } from '../context/ToastContext';
 import { Eye, Download } from 'lucide-react';
 
@@ -60,6 +61,10 @@ function Utang() {
   const [repayNote, setRepayNote] = useState('');
   const [repayError, setRepayError] = useState(null);
   const [repaySaving, setRepaySaving] = useState(false);
+  const [customerModalOpen, setCustomerModalOpen] = useState(false);
+  // When quick-adding a customer from inside the Lend Cash modal, prefill
+  // the lend dropdown with the new customer once saved.
+  const [lendAfterAdd, setLendAfterAdd] = useState(false);
   const { showToast } = useToast();
 
   const loadAll = () => {
@@ -103,6 +108,36 @@ function Utang() {
       showToast('Payment recorded');
       const updated = ledger.find((c) => c.customer_id === payload.customer_id);
       if (updated) selectCustomer({ ...updated, customer_id: payload.customer_id });
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  // Quick-add customer without leaving the Utang page. Refreshes the ledger
+  // and selects the new customer; if launched from the Lend Cash modal,
+  // prefills the lend dropdown too.
+  const handleSaveCustomer = async (formData) => {
+    try {
+      const res = await apiFetch('/customers', {
+        method: 'POST',
+        body: JSON.stringify(formData),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to add customer');
+      setCustomerModalOpen(false);
+      showToast('Customer added');
+      const fresh = await apiFetch(UTANG_API).then((r) => r.json());
+      if (Array.isArray(fresh)) {
+        setLedger(fresh);
+        const created = fresh.find((c) => c.customer_id === data.id);
+        if (created) selectCustomer(created);
+        if (lendAfterAdd) {
+          setLendCustomerId(String(data.id));
+          setLendAfterAdd(false);
+        }
+      } else {
+        loadAll();
+      }
     } catch (err) {
       showToast(err.message, 'error');
     }
@@ -312,7 +347,13 @@ function Utang() {
           <h1 className="text-2xl font-bold text-on-surface">Utang Management</h1>
           <p className="text-on-surface-variant">Track store credit and cash loans. Cash loans are monitoring only — not counted in Cash Drawer.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => { setLendAfterAdd(false); setCustomerModalOpen(true); }}
+            className="border border-outline-variant text-on-surface font-medium px-4 py-2 rounded-full text-sm"
+          >
+            + New Customer
+          </button>
           <button
             onClick={openLend}
             className="border border-outline-variant text-on-surface font-medium px-4 py-2 rounded-full text-sm"
@@ -536,6 +577,13 @@ function Utang() {
         preselectedCustomer={selectedCustomer}
       />
 
+      <CustomerModal
+        isOpen={customerModalOpen}
+        onClose={() => { setCustomerModalOpen(false); setLendAfterAdd(false); }}
+        onSave={handleSaveCustomer}
+        initialData={null}
+      />
+
       {lendOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-surface rounded-xl w-full max-w-md shadow-lg overflow-hidden">
@@ -548,7 +596,16 @@ function Utang() {
                 Monitoring only — cash loans are NOT counted in Cash Drawer.
               </p>
               <div>
-                <label className="text-sm font-medium text-on-surface-variant">Customer</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-medium text-on-surface-variant">Customer</label>
+                  <button
+                    type="button"
+                    onClick={() => { setLendAfterAdd(true); setCustomerModalOpen(true); }}
+                    className="text-primary text-xs font-medium"
+                  >
+                    + New
+                  </button>
+                </div>
                 <select
                   value={lendCustomerId}
                   onChange={(e) => setLendCustomerId(e.target.value)}
