@@ -126,6 +126,9 @@ function Utang() {
       if (!res.ok) throw new Error(data.error || 'Failed to add customer');
       setCustomerModalOpen(false);
       showToast('Customer added');
+      if (lendAfterAdd && Number(formData.credit_limit || 0) <= 0) {
+        showToast('Note: credit limit is ₱0 — raise it (Customers → Edit) before lending.', 'error');
+      }
       const fresh = await apiFetch(UTANG_API).then((r) => r.json());
       if (Array.isArray(fresh)) {
         setLedger(fresh);
@@ -185,6 +188,16 @@ function Utang() {
     setLendError(null);
     if (!lendCustomerId) { setLendError('Select a customer.'); return; }
     if (!lendAmount || Number(lendAmount) <= 0) { setLendError('Enter a valid amount.'); return; }
+    // Surface the credit-limit block up front: new customers default to ₱0
+    // limit, so any loan is rejected until the limit is raised.
+    const lendTo = ledger.find((c) => c.customer_id === Number(lendCustomerId));
+    const lendAvailable = lendTo ? Number(lendTo.credit_limit || 0) - Number(lendTo.balance || 0) : 0;
+    if (lendTo && Number(lendAmount) > lendAvailable + 0.005) {
+      setLendError(
+        `${lendTo.name} only has ₱${Math.max(lendAvailable, 0).toFixed(2)} available credit. Raise their limit first (Customers → Edit).`
+      );
+      return;
+    }
     setLendSaving(true);
     try {
       const res = await apiFetch(`${UTANG_API}/cash-loan`, {
@@ -612,12 +625,26 @@ function Utang() {
                   className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
                 >
                   <option value="">Select customer...</option>
-                  {ledger.map((c) => (
-                    <option key={c.customer_id} value={c.customer_id}>
-                      {c.name} — ₱{Number(c.balance).toFixed(2)} owed
-                    </option>
-                  ))}
+                  {ledger.map((c) => {
+                    const avail = Number(c.credit_limit || 0) - Number(c.balance || 0);
+                    return (
+                      <option key={c.customer_id} value={c.customer_id}>
+                        {c.name} — avail ₱{avail.toFixed(2)}
+                      </option>
+                    );
+                  })}
                 </select>
+                {(() => {
+                  const sel = ledger.find((c) => c.customer_id === Number(lendCustomerId));
+                  if (!sel) return null;
+                  const avail = Number(sel.credit_limit || 0) - Number(sel.balance || 0);
+                  return (
+                    <p className={`text-xs mt-1 ${avail <= 0 ? 'text-error' : 'text-on-surface-variant'}`}>
+                      Available credit: ₱{avail.toFixed(2)}
+                      {avail <= 0 && ' — raise the limit first (Customers → Edit).'}
+                    </p>
+                  );
+                })()}
               </div>
               <div>
                 <label className="text-sm font-medium text-on-surface-variant">Amount Lent</label>
