@@ -104,6 +104,24 @@ async function ensureDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+    // Older databases may carry a CHECK constraint limiting utang type to
+    // ('charge','payment'), which would reject the monitoring-only cash_loan
+    // types. Drop any check constraint that references the type column —
+    // all validation for these values lives in the API layer.
+    await pool.query(`
+      DO $$
+      DECLARE r RECORD;
+      BEGIN
+        FOR r IN
+          SELECT conname FROM pg_constraint
+          WHERE conrelid = 'utang_transactions'::regclass
+            AND contype = 'c'
+            AND pg_get_constraintdef(oid) ILIKE '%type%'
+        LOOP
+          EXECUTE format('ALTER TABLE utang_transactions DROP CONSTRAINT %I', r.conname);
+        END LOOP;
+      END $$;
+    `);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS expenses (
         id SERIAL PRIMARY KEY,
@@ -1009,7 +1027,7 @@ app.post('/api/utang/cash-loan', requireAuth, async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to record cash loan' });
+    res.status(500).json({ error: err.message || 'Failed to record cash loan' });
   }
 });
 
