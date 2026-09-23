@@ -6,6 +6,7 @@ const cors = require('cors');
 require('dotenv').config();
 const pool = require('./db');
 const requireRole = require('./requireRole');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -194,7 +195,9 @@ async function ensureDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
-    // Restock / stock-in history: every inventory restock is logged here
+    // Restock / stock-in history: every inventory restock is logged here.
+    // One bulk Confirm = one batch_id, so multi-product deliveries read as a
+    // single transaction-like entry with expandable line items.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS restock_logs (
         id SERIAL PRIMARY KEY,
@@ -206,9 +209,11 @@ async function ensureDB() {
         old_cost NUMERIC,
         new_cost NUMERIC,
         created_by INTEGER REFERENCES users(id),
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        batch_id TEXT
       );
     `);
+    await pool.query(`ALTER TABLE restock_logs ADD COLUMN IF NOT EXISTS batch_id TEXT`);
     // Stock audit / shrinkage tracking (sold-but-unrecorded, theft, damage, etc.)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS stock_adjustments (
@@ -1526,6 +1531,7 @@ app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const batchId = crypto.randomUUID();
     const saved = [];
     for (const it of items) {
       const qty = Number(it.quantity);
@@ -1552,14 +1558,14 @@ app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async 
       if (result.rows.length === 0) throw new Error(`Product #${it.product_id} not found`);
       const updated = result.rows[0];
       await client.query(
-        `INSERT INTO restock_logs (product_id, product_name, qty_added, old_qty, new_qty, old_cost, new_cost, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [updated.id, updated.name, qty, oldQty, Number(updated.stock_quantity), oldCost, updated.cost_price == null ? null : Number(updated.cost_price), req.user.id]
+        `INSERT INTO restock_logs (product_id, product_name, qty_added, old_qty, new_qty, old_cost, new_cost, created_by, batch_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [updated.id, updated.name, qty, oldQty, Number(updated.stock_quantity), oldCost, updated.cost_price == null ? null : Number(updated.cost_price), req.user.id, batchId]
       );
       saved.push(result.rows[0]);
     }
     await client.query('COMMIT');
-    res.status(201).json({ saved, count: saved.length });
+    res.status(201).json({ saved, count: saved.length, batch_id: batchId });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
@@ -1603,9 +1609,9 @@ app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (
     );
     const updated = result.rows[0];
     await client.query(
-      `INSERT INTO restock_logs (product_id, product_name, qty_added, old_qty, new_qty, old_cost, new_cost, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [updated.id, updated.name, qty, oldQty, Number(updated.stock_quantity), oldCost, updated.cost_price == null ? null : Number(updated.cost_price), req.user.id]
+      `INSERT INTO restock_logs (product_id, product_name, qty_added, old_qty, new_qty, old_cost, new_cost, created_by, batch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [updated.id, updated.name, qty, oldQty, Number(updated.stock_quantity), oldCost, updated.cost_price == null ? null : Number(updated.cost_price), req.user.id, crypto.randomUUID()]
     );
     await client.query('COMMIT');
     res.json(updated);
@@ -1618,14 +1624,37 @@ app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (
   }
 });
 
+// Transaction-style restock history: one entry per Confirm (batch), with
+// nested line items — mirrors how sales transactions read in history.
 app.get('/api/restock-logs', requireAuth, requireRole('owner'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT rl.*, u.name AS created_by_name FROM restock_logs rl
        LEFT JOIN users u ON u.id = rl.created_by
-       ORDER BY rl.created_at DESC LIMIT 100`
+       ORDER BY rl.created_at DESC LIMIT 500`
     );
-    res.json(result.rows);
+    const groups = new Map();
+    for (const r of result.rows) {
+      // Pre-batch rows (batch_id NULL) each stand as their own single-item entry
+      const key = r.batch_id || `single-${r.id}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          batch_id: r.batch_id || `single-${r.id}`,
+          created_at: r.created_at,
+          created_by: r.created_by,
+          created_by_name: r.created_by_name,
+          item_count: 0,
+          total_qty: 0,
+          items: [],
+        });
+      }
+      const g = groups.get(key);
+      g.items.push(r);
+      g.item_count = g.items.length;
+      g.total_qty = g.items.reduce((n, it) => n + Number(it.qty_added || 0), 0);
+      if (new Date(r.created_at) > new Date(g.created_at)) g.created_at = r.created_at;
+    }
+    res.json([...groups.values()].slice(0, 100));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load restock history' });

@@ -138,8 +138,10 @@ const p=require('./db');
         old_cost NUMERIC,
         new_cost NUMERIC,
         created_by INTEGER REFERENCES users(id),
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        batch_id TEXT
       )`);
+  await p.query(`ALTER TABLE restock_logs ADD COLUMN IF NOT EXISTS batch_id TEXT`);
   console.log('migration done');
   const r=await p.query(`SELECT column_name FROM information_schema.columns WHERE table_name='expenses'`);
   console.log(r.rows);

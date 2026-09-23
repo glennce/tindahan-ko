@@ -5,6 +5,7 @@ import RepackModal from '../components/RepackModal';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 import { formatStock } from '../utils';
+import { Eye } from 'lucide-react';
 
 const API = '/products';
 
@@ -57,6 +58,7 @@ function Inventory() {
   const [restockSearch, setRestockSearch] = useState('');
   const [restockPage, setRestockPage] = useState(1);
   const RESTOCK_PER_PAGE = 20;
+  const [selectedRestock, setSelectedRestock] = useState(null);
   const [stockinPage, setStockinPage] = useState(1);
   const STOCKIN_PER_PAGE = 20;
   const [auditCountPage, setAuditCountPage] = useState(1);
@@ -351,10 +353,24 @@ function Inventory() {
   const stockinVisibleGroups = quickGroups
     .map((c) => ({ name: c || 'Uncategorized', items: paginatedStockinList.filter((p) => (p.category || '') === c) }))
     .filter((g) => g.items.length > 0);
-  // Restock audit history
-  const filteredRestocks = restockLogs.filter((r) =>
-    !restockSearch || (r.product_name || '').toLowerCase().includes(restockSearch.toLowerCase())
-  );
+  // Restock history: one entry per Confirm (batch), like a sales transaction.
+  // Legacy single-row logs are wrapped as one-item batches so old + new read the same.
+  const restockBatches = restockLogs.flatMap((e) => {
+    if (Array.isArray(e.items)) return [e];
+    return [{
+      batch_id: `single-${e.id}`,
+      created_at: e.created_at,
+      created_by_name: e.created_by_name,
+      item_count: 1,
+      total_qty: Number(e.qty_added || 0),
+      items: [e],
+    }];
+  });
+  const filteredRestocks = restockBatches.filter((b) => {
+    const q = restockSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (b.items || []).some((it) => (it.product_name || '').toLowerCase().includes(q));
+  });
   const restockTotalPages = Math.max(Math.ceil(filteredRestocks.length / RESTOCK_PER_PAGE), 1);
   const paginatedRestocks = filteredRestocks.slice((restockPage - 1) * RESTOCK_PER_PAGE, restockPage * RESTOCK_PER_PAGE);
 
@@ -567,30 +583,43 @@ function Inventory() {
 
           <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
             <div className="p-4 border-b border-outline-variant flex flex-col sm:flex-row sm:justify-between gap-2">
-              <h2 className="font-semibold text-on-surface">Restock history — stock-in log</h2>
-              <input type="text" placeholder="Search product..." value={restockSearch} onChange={(e) => setRestockSearch(e.target.value)} className="border border-outline-variant rounded-lg px-3 py-1.5 text-sm" />
+              <div>
+                <h2 className="font-semibold text-on-surface">Restock history</h2>
+                <p className="text-xs text-on-surface-variant">One entry per Confirm — like a transaction. Click the eye to see every product restocked.</p>
+              </div>
+              <input type="text" placeholder="Search product in restock..." value={restockSearch} onChange={(e) => setRestockSearch(e.target.value)} className="border border-outline-variant rounded-lg px-3 py-1.5 text-sm" />
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm min-w-[720px]">
                 <thead className="bg-surface-container-low text-on-surface-variant">
-                  <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">Added</th><th className="px-4 py-3">Before → After</th><th className="px-4 py-3">Cost</th><th className="px-4 py-3">By</th></tr>
+                  <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Products restocked</th><th className="px-4 py-3">Total added</th><th className="px-4 py-3">By</th><th className="px-4 py-3 text-right">Details</th></tr>
                 </thead>
                 <tbody>
-                  {paginatedRestocks.map((r) => (
-                    <tr key={r.id} className="border-t border-outline-variant">
-                      <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">{new Date(r.created_at).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-on-surface font-medium">{r.product_name}</td>
-                      <td className="px-4 py-3 font-bold text-secondary">+{r.qty_added}</td>
-                      <td className="px-4 py-3 text-on-surface-variant">{r.old_qty} → {r.new_qty}</td>
-                      <td className="px-4 py-3 text-on-surface-variant">
-                        {r.old_cost != null || r.new_cost != null
-                          ? `₱${Number(r.old_cost ?? 0).toFixed(2)} → ₱${Number(r.new_cost ?? 0).toFixed(2)}`
-                          : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-on-surface-variant">{r.created_by_name || '—'}</td>
-                    </tr>
-                  ))}
-                  {filteredRestocks.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-on-surface-variant">No restocks yet. Stock in products above and every delivery will be logged here.</td></tr>}
+                  {paginatedRestocks.map((b) => {
+                    const preview = (b.items || []).slice(0, 2).map((it) => it.product_name).join(', ');
+                    const extra = (b.item_count || 0) - Math.min(2, (b.items || []).length);
+                    return (
+                      <tr key={b.batch_id} className="border-t border-outline-variant hover:bg-surface-container-low">
+                        <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">{new Date(b.created_at).toLocaleString()}</td>
+                        <td className="px-4 py-3 text-on-surface">
+                          <span className="font-medium">{b.item_count} product{b.item_count === 1 ? '' : 's'}</span>
+                          {preview && <span className="block text-xs font-normal text-on-surface-variant truncate max-w-[320px]">{preview}{extra > 0 ? ` +${extra} more` : ''}</span>}
+                        </td>
+                        <td className="px-4 py-3 font-bold text-secondary">+{b.total_qty}</td>
+                        <td className="px-4 py-3 text-on-surface-variant">{b.created_by_name || '—'}</td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => setSelectedRestock(b)}
+                            className="p-1.5 text-primary hover:bg-primary-container hover:text-on-primary rounded-md transition-colors"
+                            title="View restocked products"
+                          >
+                            <Eye size={18} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filteredRestocks.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-on-surface-variant">No restocks yet. Stock in products above and every delivery will be logged here.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -617,6 +646,46 @@ function Inventory() {
               </div>
             </div>
           </div>
+
+          {selectedRestock && (
+            <>
+              <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setSelectedRestock(null)} />
+              <div className="fixed inset-y-0 right-0 w-full max-w-md bg-surface shadow-2xl z-50 flex flex-col border-l border-outline-variant">
+                <div className="flex justify-between items-center px-4 py-3 border-b border-outline-variant">
+                  <h2 className="font-semibold text-on-surface">Restock Details</h2>
+                  <button onClick={() => setSelectedRestock(null)} className="text-on-surface-variant text-xl">
+                    {'\u2715'}
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4">
+                  <p className="text-on-surface-variant text-sm mb-3">
+                    {new Date(selectedRestock.created_at).toLocaleString()} · {selectedRestock.created_by_name || '—'} · {selectedRestock.item_count} product{selectedRestock.item_count === 1 ? '' : 's'}
+                  </p>
+                  <div className="space-y-2 mb-3">
+                    {(selectedRestock.items || []).map((it) => (
+                      <div key={it.id} className="border-t border-outline-variant pt-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-on-surface font-medium">{it.product_name}</span>
+                          <span className="font-bold text-secondary">+{it.qty_added}</span>
+                        </div>
+                        <div className="flex justify-between text-xs text-on-surface-variant mt-0.5">
+                          <span>Stock: {it.old_qty} → {it.new_qty}</span>
+                          <span>
+                            {(it.old_cost != null || it.new_cost != null)
+                              ? `₱${Number(it.old_cost ?? 0).toFixed(2)} → ₱${Number(it.new_cost ?? 0).toFixed(2)}`
+                              : ''}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex justify-between font-bold text-on-surface border-t border-outline-variant pt-2">
+                    <span>Total added</span><span>+{selectedRestock.total_qty}</span>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 
