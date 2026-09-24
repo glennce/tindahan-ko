@@ -57,7 +57,6 @@ export default function Shift() {
   const [activeTab, setActiveTab] = useState('drawer');
   const [data, setData] = useState(null);
   const [history, setHistory] = useState([]);
-  const [openingCashInput, setOpeningCashInput] = useState('');
   const [closingShift, setClosingShift] = useState(null);
   const [closingCash, setClosingCash] = useState('');
   const [notes, setNotes] = useState('');
@@ -102,26 +101,6 @@ export default function Shift() {
   }, []);
 
   useEffect(() => { loadReport(); }, [reportStart, reportEnd]);
-
-  const handleSetOpeningCash = async () => {
-    if (!openingCashInput || Number(openingCashInput) < 0) {
-      showToast('Enter a valid amount', 'error');
-      return;
-    }
-    try {
-      const res = await apiFetch('/shift/opening-cash', {
-        method: 'POST',
-        body: JSON.stringify({ opening_cash: Number(openingCashInput) }),
-      });
-      const result = await res.json();
-      if (!res.ok) throw new Error(result.error);
-      setOpeningCashInput('');
-      loadCurrent();
-      showToast('Starting cash recorded');
-    } catch (err) {
-      showToast(err.message, 'error');
-    }
-  };
 
   const handleAddExpense = async (e) => {
     e?.preventDefault();
@@ -233,24 +212,22 @@ export default function Shift() {
   const closedDays = Number(closedData.closed_days ?? 0);
   const cashExpenses = running.cash_expenses ?? 0;
   const gcashExpenses = running.gcash_expenses ?? 0;
-  const todayCashPending = Number(shift?.opening_cash || 0) + Number(running.cash_sales ?? 0) + Number(running.cash_utang_payments ?? 0);
+  // No starting cash: today's pending is just today's cash in
+  // (cash sales + cash credit payments). Count it each morning and the
+  // KPI below keeps accumulating every counted actual.
+  const todayCashPending = Number(running.cash_sales ?? 0) + Number(running.cash_utang_payments ?? 0);
   const todayGcashPending = Number(running.gcash_sales ?? 0) + Number(running.gcash_utang_payments ?? 0);
-  // Net added today (excludes opening to avoid double-counting when opening is carried over).
-  // Cumulative total after count = counted total + today's net.
-  const todayCashNet = Number(running.cash_sales ?? 0) + Number(running.cash_utang_payments ?? 0);
-  const todayGcashNet = Number(running.gcash_sales ?? 0) + Number(running.gcash_utang_payments ?? 0);
-  // Live totals: counted days + today's sales so far (each day's sales add up:
-  // 1500 today -> KPI 1500, +2500 tomorrow -> 4000, -500 expense -> 3500, +3000 -> 6500).
+  const todayCashNet = todayCashPending;
+  const todayGcashNet = todayGcashPending;
+  // Live totals: all counted actuals + today's sales so far.
   // Expenses/transfers after the last count are already deducted inside totalCash/totalGcash.
   const liveCash = isClosed ? totalCash : totalCash + todayCashNet;
   const liveGcash = isClosed ? totalGcash : totalGcash + todayGcashNet;
-  const projectedCash = liveCash;
-  const projectedGcash = liveGcash;
 
   return (
     <div>
       <h1 className="text-2xl font-bold text-on-surface mb-1">Cash Drawer</h1>
-      <p className="text-on-surface-variant mb-6">Cash & GCash monitoring — transfers and expenses deduct from previous counted total.</p>
+      <p className="text-on-surface-variant mb-6">Count the actual cash every morning — the totals above keep adding up each time you count.</p>
 
       {/* KPI Cards — Always visible */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
@@ -328,8 +305,7 @@ export default function Shift() {
                     <p className="text-xs text-on-surface-variant">Closed at {shift.closed_at ? new Date(shift.closed_at).toLocaleString() : ''}</p>
                   </div>
                   <div className="space-y-2 text-sm mb-4">
-                    <div className="flex justify-between text-on-surface-variant"><span>Starting Cash</span><span>₱{Number(shift.opening_cash).toFixed(2)}</span></div>
-                    <div className="flex justify-between text-on-surface-variant"><span>Expected Cash</span><span>₱{Number(shift.expected_cash).toFixed(2)}</span></div>
+                    <div className="flex justify-between text-on-surface-variant"><span>Expected Cash (today's sales)</span><span>₱{Number(shift.expected_cash).toFixed(2)}</span></div>
                     <div className="flex justify-between font-bold text-on-surface text-base pt-2 border-t border-outline-variant"><span>Actual Cash Counted</span><span>₱{Number(shift.closing_cash).toFixed(2)}</span></div>
                     <div className={`flex justify-between font-bold ${Number(shift.difference) === 0 ? 'text-secondary' : 'text-error'}`}><span>Difference</span><span>₱{Number(shift.difference).toFixed(2)}</span></div>
                     <div className="pt-2 border-t border-outline-variant space-y-2">
@@ -340,29 +316,21 @@ export default function Shift() {
                   </div>
                   <p className="text-xs text-on-surface-variant">Tomorrow auto-creates at 00:00 Manila.</p>
                 </>
-              ) : shift.opening_cash === null ? (
-                <>
-                  <p className="text-on-surface-variant text-sm mb-3">Set today's starting cash — sales tracked either way.</p>
-                  <label className="text-sm text-on-surface-variant">Starting Cash</label>
-                  <input type="number" value={openingCashInput} onChange={(e) => setOpeningCashInput(e.target.value)} placeholder="e.g. 2000" className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 mb-3" />
-                  <button onClick={handleSetOpeningCash} className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg">Record Starting Cash</button>
-                </>
               ) : (
                 <>
                   <div className="space-y-2 text-sm mb-4">
-                    <div className="flex justify-between text-on-surface-variant"><span>Starting Cash</span><span>₱{Number(shift.opening_cash).toFixed(2)}</span></div>
                     <div className="flex justify-between text-secondary"><span>Cash Sales (today)</span><span>+₱{Number(running.cash_sales).toFixed(2)}</span></div>
                     <div className="flex justify-between text-secondary"><span>Credit Payments Cash (today)</span><span>+₱{Number(running.cash_utang_payments).toFixed(2)}</span></div>
                     <div className="flex justify-between font-bold text-on-surface pt-2 border-t border-outline-variant text-base"><span>Today's Cash — Pending</span><span>₱{Number(todayCashPending).toFixed(2)}</span></div>
-                    <p className="text-xs text-secondary">Pending — no expense deducted (expenses go to Counted above)</p>
+                    <p className="text-xs text-secondary">Count the drawer in the morning, take it to your wallet, then enter the actual — totals above keep adding up.</p>
                     <div className="pt-2 border-t border-outline-variant space-y-2">
                       <div className="flex justify-between text-secondary"><span>GCash Sales (today)</span><span>+₱{Number(running.gcash_sales).toFixed(2)}</span></div>
                       <div className="flex justify-between font-bold text-on-surface pt-1 border-t border-outline-variant"><span>Today's GCash — Pending</span><span>₱{Number(todayGcashPending).toFixed(2)}</span></div>
                       <p className="text-xs text-secondary">Pending — no expense deducted</p>
                     </div>
                   </div>
-                  <p className="text-xs text-on-surface-variant mb-2">KPI above shows only counted days. Today's added after count.</p>
-                  <button onClick={() => setClosingShift(shift)} className="w-full border border-outline-variant text-on-surface font-medium py-2.5 rounded-lg text-sm">Close Day — Enter Actual Cash</button>
+                  <p className="text-xs text-on-surface-variant mb-2">KPI above = all counted actuals + today's sales so far.</p>
+                  <button onClick={() => setClosingShift(shift)} className="w-full bg-primary text-on-primary font-semibold py-2.5 rounded-lg text-sm">Enter Actual Cash</button>
                 </>
               )}
             </div>
@@ -551,11 +519,11 @@ export default function Shift() {
                   )}
                   <button
                     onClick={() => {
-                    const rows = [['Date', 'Opening', 'Cash Counted', 'Difference', 'Debt from Credit (Utang)', 'GCash Sales', 'GCash Utang Payments', 'GCash Received', 'Cash Expenses', 'GCash Expenses'],
+                    const rows = [['Date', 'Cash Counted', 'Difference', 'Debt from Credit (Utang)', 'GCash Sales', 'GCash Utang Payments', 'GCash Received', 'Cash Expenses', 'GCash Expenses'],
                       ...history.map((s) => {
                         const gcashSales = Number(s.gcash_sales ?? 0);
                         const gcashPay = Number(s.gcash_utang_payments ?? 0);
-                        return [new Date(s.shift_date).toLocaleDateString(), s.opening_cash, s.closing_cash, s.difference, Number(s.utang_charged ?? 0).toFixed(2), gcashSales.toFixed(2), gcashPay.toFixed(2), (gcashSales + gcashPay).toFixed(2), Number(s.cash_expenses ?? 0).toFixed(2), Number(s.gcash_expenses ?? 0).toFixed(2)];
+                        return [new Date(s.shift_date).toLocaleDateString(), s.closing_cash, s.difference, Number(s.utang_charged ?? 0).toFixed(2), gcashSales.toFixed(2), gcashPay.toFixed(2), (gcashSales + gcashPay).toFixed(2), Number(s.cash_expenses ?? 0).toFixed(2), Number(s.gcash_expenses ?? 0).toFixed(2)];
                       })];
                     downloadCsv(`shift-history-${new Date().toISOString().slice(0, 10)}.csv`, rows);
                   }}
@@ -568,7 +536,7 @@ export default function Shift() {
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm min-w-[900px]">
                   <thead className="bg-surface-container-low text-on-surface-variant">
-                    <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Opening</th><th className="px-4 py-3">Cash Counted</th><th className="px-4 py-3">Diff</th><th className="px-4 py-3">Debt (Utang)</th><th className="px-4 py-3">GCash Received</th><th className="px-4 py-3 text-right">Details</th></tr>
+                    <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Cash Counted</th><th className="px-4 py-3">Diff</th><th className="px-4 py-3">Debt (Utang)</th><th className="px-4 py-3">GCash Received</th><th className="px-4 py-3 text-right">Details</th></tr>
                   </thead>
                   <tbody>
                     {history.map((s) => {
@@ -578,7 +546,6 @@ export default function Shift() {
                         <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">{new Date(s.shift_date).toLocaleDateString()}
                           <span className="block text-xs">Cash exp ₱{Number(s.cash_expenses ?? 0).toFixed(2)} · GCash exp ₱{Number(s.gcash_expenses ?? 0).toFixed(2)}</span>
                         </td>
-                        <td className="px-4 py-3 text-on-surface">₱{Number(s.opening_cash).toFixed(2)}</td>
                         <td className="px-4 py-3 text-on-surface">₱{Number(s.closing_cash).toFixed(2)}</td>
                         <td className={`px-4 py-3 font-medium ${Number(s.difference) === 0 ? 'text-secondary' : 'text-error'}`}>₱{Number(s.difference).toFixed(2)}</td>
                         <td className="px-4 py-3 text-error font-medium">₱{Number(s.utang_charged ?? 0).toFixed(2)}
@@ -591,7 +558,7 @@ export default function Shift() {
                       </tr>
                       );
                     })}
-                    {history.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-on-surface-variant">No shifts closed yet.</td></tr>}
+                    {history.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-on-surface-variant">No shifts closed yet.</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -628,7 +595,6 @@ export default function Shift() {
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-2 text-sm">
               <p className="text-on-surface-variant mb-2">{new Date(selectedShift.shift_date).toLocaleDateString()} · closed {selectedShift.closed_at ? new Date(selectedShift.closed_at).toLocaleString() : ''}</p>
-              <div className="flex justify-between text-on-surface-variant"><span>Starting Cash</span><span>₱{Number(selectedShift.opening_cash).toFixed(2)}</span></div>
               <div className="flex justify-between text-on-surface-variant"><span>Cash Sales</span><span>+₱{Number(selectedShift.cash_sales ?? 0).toFixed(2)}</span></div>
               <div className="flex justify-between text-on-surface-variant"><span>Credit Payments (Cash)</span><span>+₱{Number(selectedShift.cash_utang_payments ?? 0).toFixed(2)}</span></div>
               <div className="flex justify-between text-on-surface-variant"><span>Cash Expenses</span><span className="text-error">-₱{Number(selectedShift.cash_expenses ?? 0).toFixed(2)}</span></div>

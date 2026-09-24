@@ -2097,9 +2097,12 @@ async function computeExpectedCash(openingCash, startTime, endTime, client = poo
   );
   const totalExpenses = Number(cashExpenses.rows[0].total) + Number(gcashExpenses.rows[0].total);
 
-  // Expected is total sale for the day WITHOUT deducting expenses (expenses only affect counted total)
+  // No starting cash: expected is just today's actual cash sales
+  // (cash sales + cash utang payments). Opening is always 0 — the user
+  // counts the drawer every morning and takes the cash to their wallet,
+  // so nothing carries over. `openingCash` param is kept for compat but ignored.
+  void openingCash;
   const expectedCash =
-    Number(openingCash) +
     Number(cashSales.rows[0].total) +
     Number(cashUtangPayments.rows[0].total);
   const expectedGcash =
@@ -2165,34 +2168,20 @@ async function ensureTodayShift() {
   const today = manilaToday();
   let result = await pool.query(`SELECT * FROM cash_shifts WHERE shift_date = $1`, [today]);
   if (result.rows.length === 0) {
-    // Carry over yesterday's counted cash as today's opening so daily closes
-    // accumulate (day1 1500 + day2 2500 = 4000) instead of double-counting
-    // the full drawer when opening is left at 0.
-    const prev = await pool.query(
-      `SELECT closing_cash FROM cash_shifts WHERE status = 'closed' AND closing_cash IS NOT NULL ORDER BY shift_date DESC LIMIT 1`
-    );
-    const carried = prev.rows.length ? prev.rows[0].closing_cash : null;
-    if (carried !== null) {
-      result = await pool.query(
-        `INSERT INTO cash_shifts (shift_date, status, opening_cash) VALUES ($1, 'active', $2) RETURNING *`,
-        [today, carried]
-      );
-    } else {
-      result = await pool.query(
-        `INSERT INTO cash_shifts (shift_date, status) VALUES ($1, 'active') RETURNING *`,
-        [today]
-      );
-    }
-  } else if (result.rows[0].opening_cash === null) {
-    // Backfill opening from the latest counted close (once) so expected math is right.
-    const prev = await pool.query(
-      `SELECT closing_cash FROM cash_shifts WHERE status = 'closed' AND closing_cash IS NOT NULL AND shift_date < $1 ORDER BY shift_date DESC LIMIT 1`,
+    // No starting cash / no carry-over: every morning starts at 0.
+    // The user counts the actual cash drawer and takes it to their wallet,
+    // then the KPI simply accumulates each day's counted actual.
+    result = await pool.query(
+      `INSERT INTO cash_shifts (shift_date, status, opening_cash) VALUES ($1, 'active', 0) RETURNING *`,
       [today]
     );
-    if (prev.rows.length) {
-      await pool.query(`UPDATE cash_shifts SET opening_cash = $1 WHERE shift_date = $2 AND opening_cash IS NULL`, [prev.rows[0].closing_cash, today]);
-      result = await pool.query(`SELECT * FROM cash_shifts WHERE shift_date = $1`, [today]);
-    }
+  } else if (result.rows[0].opening_cash === null) {
+    await pool.query(`UPDATE cash_shifts SET opening_cash = 0 WHERE shift_date = $1 AND opening_cash IS NULL`, [today]);
+    result = await pool.query(`SELECT * FROM cash_shifts WHERE shift_date = $1`, [today]);
+  } else if (Number(result.rows[0].opening_cash) !== 0 && result.rows[0].status === 'active') {
+    // Normalize any legacy carried-over opening back to 0 for active days.
+    await pool.query(`UPDATE cash_shifts SET opening_cash = 0 WHERE shift_date = $1 AND status = 'active'`, [today]);
+    result = await pool.query(`SELECT * FROM cash_shifts WHERE shift_date = $1`, [today]);
   }
   return result.rows[0];
 }
@@ -2205,19 +2194,13 @@ async function freezeStaleShifts() {
   );
   for (const shift of stale.rows) {
     const dateStr = dbDateToManila(shift.shift_date);
-    // Fill missing opening from the previous counted close so the frozen
-    // expected isn't missing the carried-over cash.
-    let opening = shift.opening_cash;
-    if (opening === null) {
-      const prev = await pool.query(
-        `SELECT closing_cash FROM cash_shifts WHERE status = 'closed' AND closing_cash IS NOT NULL AND shift_date < $1 ORDER BY shift_date DESC LIMIT 1`,
-        [shift.shift_date]
-      );
-      opening = prev.rows.length ? prev.rows[0].closing_cash : 0;
-      await pool.query(`UPDATE cash_shifts SET opening_cash = $1 WHERE id = $2`, [opening, shift.id]);
+    // No starting cash: normalize opening to 0.
+    const opening = 0;
+    if (shift.opening_cash === null || Number(shift.opening_cash) !== 0) {
+      await pool.query(`UPDATE cash_shifts SET opening_cash = 0 WHERE id = $1`, [shift.id]);
     }
     const { start, end } = manilaDayBounds(dateStr);
-    const running = await computeExpectedCash(opening || 0, start, end);
+    const running = await computeExpectedCash(0, start, end);
     await pool.query(
       `UPDATE cash_shifts SET status = 'pending_count', expected_cash = $1, gcash_sales = $2, utang_charged = $3,
         cash_sales = $4, cash_utang_payments = $5, gcash_utang_payments = $6,
@@ -2286,9 +2269,10 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
         AND ($1::timestamptz IS NULL OR created_at >= $1)
     `, [resetAt]);
-    // Total cash in hand must ACCUMULATE across days (yesterday 2004 + today 2400 = 4404),
-    // not reset to the latest day. Each day's net added cash = closing - opening
-    // (works whether opening is 0 or carried over from the previous close).
+    // KPI accumulates every counted actual: each morning the user counts the
+    // drawer and takes it to their wallet, so total = SUM of all closing_cash.
+    // opening_cash is always 0 now, so SUM(closing - opening) == SUM(closing)
+    // while staying compatible with legacy carried-over rows.
     const closedActualRes = await pool.query(`
       SELECT COUNT(*) AS closed_days,
              COALESCE(SUM(closing_cash - COALESCE(opening_cash, 0)), 0) AS cumulative_net,
@@ -2370,17 +2354,16 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
   }
 });
 
+// Deprecated: starting cash was removed. Every day starts at 0 and the KPI
+// just accumulates each counted actual. Kept for old clients — always
+// normalizes today's opening to 0 instead of storing a value.
 app.post('/api/shift/opening-cash', requireAuth, async (req, res) => {
-  const { opening_cash } = req.body;
-  if (opening_cash === undefined || Number(opening_cash) < 0) {
-    return res.status(400).json({ error: 'Enter a valid opening cash amount' });
-  }
   try {
     const today = manilaToday();
     const result = await pool.query(
-      `UPDATE cash_shifts SET opening_cash = $1, opened_by = $2
-       WHERE shift_date = $3 AND status = 'active' RETURNING *`,
-      [opening_cash, req.user.id, today]
+      `UPDATE cash_shifts SET opening_cash = 0, opened_by = $1
+       WHERE shift_date = $2 AND status = 'active' RETURNING *`,
+      [req.user.id, today]
     );
     if (result.rows.length === 0) {
       return res.status(400).json({ error: "Today's shift is not active" });
