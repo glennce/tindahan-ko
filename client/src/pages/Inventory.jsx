@@ -425,18 +425,6 @@ function Inventory() {
         )}
         <div className="flex gap-2">
           <button
-            onClick={() => setView('stockin')}
-            className="border border-primary text-primary font-medium px-4 py-2 rounded-lg"
-          >
-            Stock In
-          </button>
-          <button
-            onClick={() => setRepackOpen(true)}
-            className="border border-primary text-primary font-medium px-4 py-2 rounded-lg"
-          >
-            Repack
-          </button>
-          <button
             onClick={openAddModal}
             className="bg-primary text-on-primary font-medium px-4 py-2 rounded-lg"
           >
