@@ -108,7 +108,14 @@ async function ensureDB() {
     // ('charge','payment'), which would reject the monitoring-only cash_loan
     // types. Drop any check constraint that references the type column —
     // all validation for these values lives in the API layer.
-    await pool.query(`
+    // Widen the column too so longer types like 'cash_loan_payment' always fit.
+    try {
+      await pool.query(`ALTER TABLE utang_transactions ALTER COLUMN type TYPE VARCHAR(30);`);
+    } catch (e) {
+      console.error('ensureDB alter utang type width:', e.message);
+    }
+    try {
+      await pool.query(`
       DO $$
       DECLARE r RECORD;
       BEGIN
@@ -122,6 +129,9 @@ async function ensureDB() {
         END LOOP;
       END $$;
     `);
+    } catch (e) {
+      console.error('ensureDB drop utang type check:', e.message);
+    }
     await pool.query(`
       CREATE TABLE IF NOT EXISTS expenses (
         id SERIAL PRIMARY KEY,
@@ -1074,8 +1084,8 @@ app.post('/api/utang/cash-loan/payment', requireAuth, async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to record cash-loan repayment' });
+    console.error('cash-loan/payment failed:', err);
+    res.status(500).json({ error: err.message || 'Failed to record cash-loan repayment' });
   }
 });
 

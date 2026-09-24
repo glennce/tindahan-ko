@@ -59,6 +59,23 @@ const p=require('./db');
         note TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )`);
+  // Allow monitoring-only types ('cash_loan', 'cash_loan_payment') on old DBs:
+  // widen column + drop legacy CHECK(type IN ('charge','payment')).
+  await p.query(`ALTER TABLE utang_transactions ALTER COLUMN type TYPE VARCHAR(30)`);
+  await p.query(`
+      DO $$
+      DECLARE r RECORD;
+      BEGIN
+        FOR r IN
+          SELECT conname FROM pg_constraint
+          WHERE conrelid = 'utang_transactions'::regclass
+            AND contype = 'c'
+            AND pg_get_constraintdef(oid) ILIKE '%type%'
+        LOOP
+          EXECUTE format('ALTER TABLE utang_transactions DROP CONSTRAINT %I', r.conname);
+        END LOOP;
+      END $$;
+    `);
   await p.query(`CREATE TABLE IF NOT EXISTS expenses (
         id SERIAL PRIMARY KEY,
         category TEXT NOT NULL,

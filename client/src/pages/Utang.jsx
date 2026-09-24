@@ -205,7 +205,7 @@ function Utang() {
         body: JSON.stringify({ customer_id: Number(lendCustomerId), amount: Number(lendAmount), note: lendNote }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.error || 'Failed to record cash loan');
       setLendOpen(false);
       loadAll();
       showToast('Cash loan recorded (monitoring only)');
@@ -213,7 +213,7 @@ function Utang() {
       if (updated) selectCustomer({ ...updated, customer_id: Number(lendCustomerId) });
       else setSelectedCustomer(null);
     } catch (err) {
-      setLendError(err.message);
+      setLendError(err.message || 'Failed to record cash loan');
     } finally {
       setLendSaving(false);
     }
@@ -236,14 +236,14 @@ function Utang() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.error || 'Failed to record cash-loan repayment');
       setRepayOpen(false);
       loadAll();
       showToast('Cash repayment recorded (monitoring only)');
       const updated = ledger.find((c) => c.customer_id === Number(repayCustomerId));
       if (updated) selectCustomer({ ...updated, customer_id: Number(repayCustomerId) });
     } catch (err) {
-      setRepayError(err.message);
+      setRepayError(err.message || 'Failed to record cash-loan repayment');
     } finally {
       setRepaySaving(false);
     }
