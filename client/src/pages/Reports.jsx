@@ -339,12 +339,14 @@ function SalesReport({ data }) {
 function ProfitReport({ data }) {
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Gross Profit" value={`₱${data.gross_profit.toFixed(2)}`}
           change={pctChange(data.gross_profit, data.prev_gross_profit)} icon={TrendingUp} />
         <StatCard label="Total Expenses" value={`₱${data.total_expenses.toFixed(2)}`} icon={Receipt} />
         <StatCard label="Net Profit" value={`₱${data.net_profit.toFixed(2)}`} icon={Activity} />
+        <StatCard label="Profit Taken Home" value={`₱${Number(data.profit_taken ?? 0).toFixed(2)}`} icon={Activity} />
       </div>
+      <p className="text-xs text-on-surface-variant">Profit Taken Home deducts drawer cash but is NOT an expense — Net Profit = Gross − real store expenses only.</p>
       <div className="bg-surface border border-outline-variant rounded-xl p-4">
         <h2 className="font-semibold text-on-surface mb-4">Profit Trend</h2>
         {data.trend.length === 0 ? (

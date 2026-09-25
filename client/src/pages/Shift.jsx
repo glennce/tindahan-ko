@@ -3,7 +3,7 @@ import { apiFetch } from '../api';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import ConfirmModal from '../components/ConfirmModal';
-import { Eye, Wallet, Smartphone, Receipt, Download, ArrowLeftRight, History } from 'lucide-react';
+import { Eye, Wallet, Smartphone, Receipt, Download, ArrowLeftRight, History, Trash2 } from 'lucide-react';
 
 const TABS = [
   { key: 'drawer', label: 'Drawer', icon: Wallet },
@@ -67,6 +67,7 @@ export default function Shift() {
   const [reportData, setReportData] = useState(undefined);
   const [transfers, setTransfers] = useState([]);
   const [transferForm, setTransferForm] = useState({ from_wallet: 'cash', to_wallet: 'gcash', amount: '', note: '' });
+  const [withdrawForm, setWithdrawForm] = useState({ amount: '', source_wallet: 'cash', note: '' });
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const { showToast } = useToast();
   const { user } = useAuth();
@@ -150,6 +151,27 @@ export default function Shift() {
     }
   };
 
+  const handleTakeProfit = async (e) => {
+    e?.preventDefault();
+    if (!withdrawForm.amount || Number(withdrawForm.amount) <= 0) {
+      showToast('Enter a valid amount', 'error');
+      return;
+    }
+    try {
+      const res = await apiFetch('/profit-withdrawals', {
+        method: 'POST',
+        body: JSON.stringify({ ...withdrawForm, amount: Number(withdrawForm.amount) }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error);
+      setWithdrawForm({ amount: '', source_wallet: 'cash', note: '' });
+      loadCurrent();
+      showToast(`Profit taken ₱${Number(withdrawForm.amount).toFixed(2)} — drawer deducted, net profit untouched`);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
   const handleClose = async () => {
     if (!closingCash || Number(closingCash) < 0) {
       showToast('Enter a valid closing cash amount', 'error');
@@ -180,6 +202,34 @@ export default function Shift() {
     downloadCsv(`expenses-report-${reportStart}-to-${reportEnd}.csv`, rows);
   };
 
+  const handleConvertExpense = async (id) => {
+    if (!window.confirm('Move this to Profit Taken? Net Profit goes back up by this amount; drawer cash stays exactly the same.')) return;
+    try {
+      const res = await apiFetch(`/expenses/${id}/convert-to-withdrawal`, { method: 'POST' });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error);
+      loadCurrent();
+      loadReport();
+      showToast('Moved to Profit Taken — net profit fixed');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleDeleteExpense = async (id) => {
+    if (!window.confirm('Delete this expense? This cannot be undone.')) return;
+    try {
+      const res = await apiFetch(`/expenses/${id}`, { method: 'DELETE' });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error);
+      loadCurrent();
+      loadReport();
+      showToast('Expense deleted');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
   const viewShiftDetail = (id) => {
     apiFetch(`/shift/${id}`).then((res) => res.json()).then(setSelectedShift);
   };
@@ -201,6 +251,13 @@ export default function Shift() {
   if (!data) return <p className="text-on-surface-variant">Loading...</p>;
 
   const { shift, running, pending, closed } = data;
+  const profit = data.profit || { today_gross: 0, taken_today_cash: 0, taken_today_gcash: 0, taken_today_total: 0, available_today: 0 };
+  const withdrawals = data.withdrawals || [];
+  const takenToday = withdrawals.filter((w) => {
+    try {
+      return new Date(w.created_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' }) === new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+    } catch { return false; }
+  });
   const expectedForClose = closingShift?.status === 'pending_count'
     ? Number(closingShift.expected_cash)
     : running.expected_cash;
@@ -239,7 +296,7 @@ export default function Shift() {
             <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total Cash in Hand{closedDays > 0 ? ` (${closedDays} day${closedDays === 1 ? '' : 's'} cumulative)` : ''}</p>
             <p className="text-2xl font-bold text-on-surface">₱{Number(liveCash).toFixed(2)}</p>
             {!isClosed
-              ? <p className="text-xs text-secondary truncate">Counted ₱{Number(totalCash).toFixed(2)} + today +₱{Number(todayCashNet).toFixed(2)}</p>
+              ? <p className="text-xs text-secondary truncate">Counted ₱{Number(totalCash).toFixed(2)}{Number(closedData.cash_withdrawals ?? 0) > 0 ? ` (after profit taken ₱${Number(closedData.cash_withdrawals).toFixed(2)})` : ''} + today +₱{Number(todayCashNet).toFixed(2)}</p>
               : <p className="text-xs text-on-surface-variant truncate">Today closed: counted ₱{Number(shift.closing_cash).toFixed(2)} · Expected ₱{Number(shift.expected_cash).toFixed(2)}</p>}
           </div>
         </div>
@@ -250,7 +307,7 @@ export default function Shift() {
           <div className="flex-1 min-w-0">
             <p className="text-on-surface-variant text-xs uppercase tracking-wide">Total GCash{closedDays > 0 ? ` (${closedDays} day${closedDays === 1 ? '' : 's'} cumulative)` : ''}</p>
             <p className="text-2xl font-bold text-on-surface">₱{Number(liveGcash).toFixed(2)}</p>
-            <p className="text-xs text-on-surface-variant truncate">Counted · Sales ₱{Number(closedData.gcash_sales ?? 0).toFixed(2)} - Expenses ₱{Number(closedData.gcash_expenses ?? 0).toFixed(2)}</p>
+            <p className="text-xs text-on-surface-variant truncate">Counted · Sales ₱{Number(closedData.gcash_sales ?? 0).toFixed(2)} - Expenses ₱{Number(closedData.gcash_expenses ?? 0).toFixed(2)}{Number(closedData.gcash_withdrawals ?? 0) > 0 ? ` - Profit taken ₱${Number(closedData.gcash_withdrawals).toFixed(2)}` : ''}</p>
             {!isClosed && <p className="text-xs text-secondary truncate">Counted ₱{Number(totalGcash).toFixed(2)} + today +₱{Number(todayGcashNet).toFixed(2)}</p>}
           </div>
         </div>
@@ -293,6 +350,7 @@ export default function Shift() {
 
         <div className="flex-1 min-w-0">
           {activeTab === 'drawer' && (
+            <div className="space-y-4">
             <div className="bg-surface border border-outline-variant rounded-xl p-6">
               <div className="flex justify-between items-start mb-4">
                 <h2 className="font-semibold text-on-surface">Today — {new Date(shift.shift_date).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</h2>
@@ -333,6 +391,67 @@ export default function Shift() {
                   <button onClick={() => setClosingShift(shift)} className="w-full bg-primary text-on-primary font-semibold py-2.5 rounded-lg text-sm">Enter Actual Cash</button>
                 </>
               )}
+            </div>
+
+            <div className="bg-surface border border-outline-variant rounded-xl p-6">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center"><Wallet className="text-on-primary" size={16} /></div>
+                <h2 className="font-semibold text-on-surface">Take Profit Home</h2>
+              </div>
+              <p className="text-xs text-on-surface-variant mb-4">Takes cash out of the drawer WITHOUT recording an expense — Net Profit stays correct. Use Expenses only for real store costs.</p>
+              <div className="grid grid-cols-3 gap-3 mb-4 text-center">
+                <div className="bg-surface-container-low rounded-lg p-3">
+                  <p className="text-xs text-on-surface-variant">Today's Gross Profit</p>
+                  <p className="text-lg font-bold text-secondary">₱{Number(profit.today_gross ?? 0).toFixed(2)}</p>
+                </div>
+                <div className="bg-surface-container-low rounded-lg p-3">
+                  <p className="text-xs text-on-surface-variant">Taken Today</p>
+                  <p className="text-lg font-bold text-on-surface">₱{Number(profit.taken_today_total ?? 0).toFixed(2)}</p>
+                </div>
+                <div className="bg-surface-container-low rounded-lg p-3">
+                  <p className="text-xs text-on-surface-variant">Available to Take</p>
+                  <p className="text-lg font-bold text-primary">₱{Number(profit.available_today ?? 0).toFixed(2)}</p>
+                </div>
+              </div>
+              <form onSubmit={handleTakeProfit} className="space-y-3">
+                <div>
+                  <label className="text-sm text-on-surface-variant">Amount</label>
+                  <input type="number" step="0.01" value={withdrawForm.amount} onChange={(e) => setWithdrawForm((f) => ({ ...f, amount: e.target.value }))} placeholder="e.g. 500" className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1" />
+                  {withdrawForm.amount && Number(withdrawForm.amount) > Number(profit.available_today ?? 0) && (
+                    <p className="text-xs text-error mt-1">⚠ More than today's remaining profit (₱{Number(profit.available_today ?? 0).toFixed(2)}) — only continue if taking from an earlier day's profit.</p>
+                  )}
+                </div>
+                <div>
+                  <label className="text-sm text-on-surface-variant">Take From</label>
+                  <div className="flex gap-2 mt-1">
+                    {['cash','gcash'].map((m) => (
+                      <button key={m} type="button" onClick={() => setWithdrawForm((f) => ({ ...f, source_wallet: m }))} className={`flex-1 py-2 rounded-lg text-sm font-medium capitalize border ${withdrawForm.source_wallet===m ? 'bg-primary text-on-primary border-primary' : 'bg-surface-container-low text-on-surface-variant border-outline-variant'}`}>{m === 'cash' ? 'Cash' : 'GCash'}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm text-on-surface-variant">Note (optional)</label>
+                  <input type="text" value={withdrawForm.note} onChange={(e) => setWithdrawForm((f) => ({ ...f, note: e.target.value }))} placeholder="e.g. Today's profit" className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1" />
+                </div>
+                <button type="submit" className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg">Take Profit Home</button>
+              </form>
+              {takenToday.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-outline-variant">
+                  <h3 className="font-medium text-on-surface text-sm mb-2">Taken Today</h3>
+                  <div className="space-y-2">
+                    {takenToday.map((w) => (
+                      <div key={w.id} className="flex justify-between items-center text-sm">
+                        <div>
+                          <p className="text-on-surface capitalize">{w.source_wallet || 'cash'} <span className="text-on-surface-variant text-xs">· {new Date(w.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{w.created_by_name ? ` · ${w.created_by_name}` : ''}</span></p>
+                          <p className="text-on-surface-variant text-xs">{w.note || '—'}</p>
+                        </div>
+                        <span className="font-medium text-on-surface">₱{Number(w.amount).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             </div>
           )}
 
@@ -469,6 +588,9 @@ export default function Shift() {
                         <h3 className="font-medium text-on-surface text-sm">Detailed — All Necessary Columns</h3>
                         <span className="text-xs text-on-surface-variant">{reportData.recent.length} records</span>
                       </div>
+                      {user?.role === 'owner' && reportData.recent.length > 0 && (
+                        <p className="text-xs text-on-surface-variant px-3 pt-2">Took profit home but logged it here by mistake? Hit <span className="font-medium text-primary">→ Profit</span> on that row — it moves to Profit Taken, Net Profit is fixed, drawer cash unchanged.</p>
+                      )}
                       <div className="overflow-x-auto">
                         <table className="w-full text-left text-sm min-w-[700px]">
                           <thead className="bg-surface-container-low text-on-surface-variant">
@@ -478,6 +600,7 @@ export default function Shift() {
                               <th className="px-4 py-3">Amount</th>
                               <th className="px-4 py-3">Payment Method</th>
                               <th className="px-4 py-3">Description</th>
+                              {user?.role === 'owner' && <th className="px-4 py-3 text-right">Action</th>}
                             </tr>
                           </thead>
                           <tbody>
@@ -488,9 +611,15 @@ export default function Shift() {
                                 <td className="px-4 py-3 text-error font-medium">₱{Number(ex.amount).toFixed(2)}</td>
                                 <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${ex.payment_method==='gcash' ? 'bg-secondary-container text-secondary' : 'bg-primary-container text-on-primary'}`}>{ex.payment_method || 'cash'}</span></td>
                                 <td className="px-4 py-3 text-on-surface-variant">{ex.description || '—'}</td>
+                                {user?.role === 'owner' && (
+                                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                                    <button onClick={() => handleConvertExpense(ex.id)} title="This was actually profit you took home — move it out of expenses" className="text-primary text-xs font-medium border border-outline-variant rounded-lg px-2 py-1 mr-1 hover:bg-primary-container">→ Profit</button>
+                                    <button onClick={() => handleDeleteExpense(ex.id)} title="Delete this expense" className="p-1.5 text-error hover:bg-error-container rounded-md align-middle"><Trash2 size={16} /></button>
+                                  </td>
+                                )}
                               </tr>
                             ))}
-                            {reportData.recent.length===0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-on-surface-variant">No expenses in this period.</td></tr>}
+                            {reportData.recent.length===0 && <tr><td colSpan={user?.role === 'owner' ? 6 : 5} className="px-4 py-6 text-center text-on-surface-variant">No expenses in this period.</td></tr>}
                           </tbody>
                         </table>
                       </div>
@@ -519,11 +648,12 @@ export default function Shift() {
                   )}
                   <button
                     onClick={() => {
-                    const rows = [['Date', 'Cash Counted', 'Difference', 'Debt from Credit (Utang)', 'GCash Sales', 'GCash Utang Payments', 'GCash Received', 'Cash Expenses', 'GCash Expenses'],
+                    const rows = [['Date', 'Cash Counted', 'Difference', 'Debt from Credit (Utang)', 'GCash Sales', 'GCash Utang Payments', 'GCash Received', 'Cash Expenses', 'GCash Expenses', 'Profit Taken Home'],
                       ...history.map((s) => {
                         const gcashSales = Number(s.gcash_sales ?? 0);
                         const gcashPay = Number(s.gcash_utang_payments ?? 0);
-                        return [new Date(s.shift_date).toLocaleDateString(), s.closing_cash, s.difference, Number(s.utang_charged ?? 0).toFixed(2), gcashSales.toFixed(2), gcashPay.toFixed(2), (gcashSales + gcashPay).toFixed(2), Number(s.cash_expenses ?? 0).toFixed(2), Number(s.gcash_expenses ?? 0).toFixed(2)];
+                        const taken = Number(s.profit_taken ?? ((Number(s.cash_withdrawals ?? 0)) + (Number(s.gcash_withdrawals ?? 0))));
+                        return [new Date(s.shift_date).toLocaleDateString(), s.closing_cash, s.difference, Number(s.utang_charged ?? 0).toFixed(2), gcashSales.toFixed(2), gcashPay.toFixed(2), (gcashSales + gcashPay).toFixed(2), Number(s.cash_expenses ?? 0).toFixed(2), Number(s.gcash_expenses ?? 0).toFixed(2), taken.toFixed(2)];
                       })];
                     downloadCsv(`shift-history-${new Date().toISOString().slice(0, 10)}.csv`, rows);
                   }}
@@ -545,6 +675,9 @@ export default function Shift() {
                       <tr key={s.id} className="border-t border-outline-variant">
                         <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">{new Date(s.shift_date).toLocaleDateString()}
                           <span className="block text-xs">Cash exp ₱{Number(s.cash_expenses ?? 0).toFixed(2)} · GCash exp ₱{Number(s.gcash_expenses ?? 0).toFixed(2)}</span>
+                          {Number(s.profit_taken ?? ((Number(s.cash_withdrawals ?? 0)) + (Number(s.gcash_withdrawals ?? 0)))) > 0 && (
+                            <span className="block text-xs">Profit taken ₱{Number(s.profit_taken ?? ((Number(s.cash_withdrawals ?? 0)) + (Number(s.gcash_withdrawals ?? 0)))).toFixed(2)}</span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-on-surface">₱{Number(s.closing_cash).toFixed(2)}</td>
                         <td className={`px-4 py-3 font-medium ${Number(s.difference) === 0 ? 'text-secondary' : 'text-error'}`}>₱{Number(s.difference).toFixed(2)}</td>
@@ -598,6 +731,7 @@ export default function Shift() {
               <div className="flex justify-between text-on-surface-variant"><span>Cash Sales</span><span>+₱{Number(selectedShift.cash_sales ?? 0).toFixed(2)}</span></div>
               <div className="flex justify-between text-on-surface-variant"><span>Credit Payments (Cash)</span><span>+₱{Number(selectedShift.cash_utang_payments ?? 0).toFixed(2)}</span></div>
               <div className="flex justify-between text-on-surface-variant"><span>Cash Expenses</span><span className="text-error">-₱{Number(selectedShift.cash_expenses ?? 0).toFixed(2)}</span></div>
+              <div className="flex justify-between text-on-surface-variant"><span>Profit Taken Home</span><span className="text-error">-₱{Number(selectedShift.profit_taken ?? ((Number(selectedShift.cash_withdrawals ?? 0)) + (Number(selectedShift.gcash_withdrawals ?? 0)))).toFixed(2)}</span></div>
               <div className="flex justify-between font-bold text-on-surface"><span>Expected Cash</span><span>₱{Number(selectedShift.expected_cash).toFixed(2)}</span></div>
               <div className="flex justify-between font-bold text-on-surface"><span>Actual Cash Counted</span><span>₱{Number(selectedShift.closing_cash).toFixed(2)}</span></div>
               <div className={`flex justify-between font-bold ${Number(selectedShift.difference) === 0 ? 'text-secondary' : 'text-error'}`}><span>Difference</span><span>₱{Number(selectedShift.difference).toFixed(2)}</span></div>

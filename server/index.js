@@ -208,6 +208,19 @@ async function ensureDB() {
         reset_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+    // Owner profit withdrawals: cash/GCash the owner takes home from profit.
+    // Deducts from the Cash Drawer like an expense, but is NEVER counted as
+    // an expense in profit reports — so Net Profit stays correct.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS profit_withdrawals (
+        id SERIAL PRIMARY KEY,
+        amount NUMERIC NOT NULL,
+        source_wallet VARCHAR(20) DEFAULT 'cash',
+        note TEXT,
+        created_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
     // Repack / conversion history (bulk -> tingi pieces, twin pack -> singles)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS repack_logs (
@@ -1215,6 +1228,51 @@ app.get('/api/expenses', requireAuth, async (req, res) => {
   }
 });
 
+// Delete a single expense (owner only) — e.g. a mistaken entry.
+app.delete('/api/expenses/:id', requireAuth, requireRole('owner'), async (req, res) => {
+  try {
+    const result = await pool.query('DELETE FROM expenses WHERE id = $1 RETURNING *', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Expense not found' });
+    res.json({ message: 'Expense deleted', expense: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete expense' });
+  }
+});
+
+// Convert an expense into a profit withdrawal (owner only) — for profit that
+// was mistakenly recorded as an expense (which wrongly shrank Net Profit).
+// The withdrawal keeps the original date/amount/wallet so the Cash Drawer
+// history stays exactly the same; only the profit report is fixed.
+app.post('/api/expenses/:id/convert-to-withdrawal', requireAuth, requireRole('owner'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const exp = await client.query('SELECT * FROM expenses WHERE id = $1', [req.params.id]);
+    if (exp.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Expense not found' });
+    }
+    const e = exp.rows[0];
+    const wallet = e.payment_method === 'gcash' ? 'gcash' : 'cash';
+    const note = [e.category, e.description].filter(Boolean).join(' — ');
+    const wd = await client.query(
+      `INSERT INTO profit_withdrawals (amount, source_wallet, note, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [e.amount, wallet, note || 'Converted from expense', req.user.id, e.created_at]
+    );
+    await client.query('DELETE FROM expenses WHERE id = $1', [req.params.id]);
+    await client.query('COMMIT');
+    res.status(201).json(wd.rows[0]);
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error(err);
+    res.status(500).json({ error: 'Failed to convert expense' });
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/expenses', requireAuth, async (req, res) => {
   const { category, amount, description, payment_method } = req.body;
   const method = payment_method === 'gcash' ? 'gcash' : 'cash';
@@ -1373,6 +1431,19 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
     );
     const totalExpenses = Number(expensesResult.rows[0].total);
     const netProfit = currentGross - totalExpenses;
+    // Owner's take-home for the period — shown separately, NEVER subtracted
+    // from net profit (recording profit-taking as an expense was making net
+    // profit go negative).
+    let profitTaken = 0;
+    try {
+      const takenResult = await pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE created_at >= $1 AND created_at < $2`,
+        [rangeStart, rangeEnd]
+      );
+      profitTaken = Number(takenResult.rows[0].total);
+    } catch {
+      profitTaken = 0;
+    }
 
     const salesResult = await pool.query(
       `SELECT COALESCE(SUM(total_amount),0) AS total FROM sales
@@ -1398,6 +1469,8 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
       total_expenses: totalExpenses,
       total_sales: totalSales,
       net_profit: netProfit,
+      profit_taken: profitTaken,
+      net_after_withdrawals: netProfit - profitTaken,
       margin_pct: totalSales > 0 ? (netProfit / totalSales) * 100 : 0,
       trend: trend.rows.map((r) => ({
         ...r,
@@ -2269,6 +2342,18 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
         AND ($1::timestamptz IS NULL OR created_at >= $1)
     `, [resetAt]);
+    // Profit withdrawals behave like expenses for the drawer (deduct cash),
+    // but live in their own table so profit reports stay correct.
+    const closedCashWithdrawals = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
+      WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+        AND ($1::timestamptz IS NULL OR created_at >= $1)
+    `, [resetAt]);
+    const closedGcashWithdrawals = await pool.query(`
+      SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
+      WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+        AND ($1::timestamptz IS NULL OR created_at >= $1)
+    `, [resetAt]);
     // KPI accumulates every counted actual: each morning the user counts the
     // drawer and takes it to their wallet, so total = SUM of all closing_cash.
     // opening_cash is always 0 now, so SUM(closing - opening) == SUM(closing)
@@ -2281,10 +2366,12 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
     `);
     const closedDays = Number(closedActualRes.rows[0].closed_days || 0);
     const hasClosedActual = closedDays > 0;
-    let closedTotalCash = hasClosedActual ? Number(closedActualRes.rows[0].cumulative_net) : (Number(closedCashSales.rows[0].total) + Number(closedCashPayments.rows[0].total) - Number(closedCashExpenses.rows[0].total));
-    let closedTotalGcash = Number(closedGcashSales.rows[0].total) + Number(closedGcashPayments.rows[0].total) - Number(closedGcashExpenses.rows[0].total);
+    let closedTotalCash = hasClosedActual ? Number(closedActualRes.rows[0].cumulative_net) : (Number(closedCashSales.rows[0].total) + Number(closedCashPayments.rows[0].total) - Number(closedCashExpenses.rows[0].total) - Number(closedCashWithdrawals.rows[0].total));
+    let closedTotalGcash = Number(closedGcashSales.rows[0].total) + Number(closedGcashPayments.rows[0].total) - Number(closedGcashExpenses.rows[0].total) - Number(closedGcashWithdrawals.rows[0].total);
     let closedCashExpDisplay = Number(closedCashExpenses.rows[0].total);
     let closedGcashExpDisplay = Number(closedGcashExpenses.rows[0].total);
+    let closedCashWdDisplay = Number(closedCashWithdrawals.rows[0].total);
+    let closedGcashWdDisplay = Number(closedGcashWithdrawals.rows[0].total);
 
     // Deduct expenses that happened AFTER the last counted time from previous sale (user wants expense to reduce previous sale, not today's pending sales)
     if (hasClosedActual) {
@@ -2311,6 +2398,25 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
           closedGcashExpDisplay += Number(postGcashTodayExp.rows[0].total);
         }
       }
+      // Profit withdrawals after the last count: deduct like expenses.
+      const postCashWd = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND created_at > $1`, [lastClosedAt]);
+      const postCashWdTotal = Number(postCashWd.rows[0].total);
+      if (postCashWdTotal) {
+        closedTotalCash -= postCashWdTotal;
+        if (!isTodayClosed) {
+          const postCashWdToday = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
+          closedCashWdDisplay += Number(postCashWdToday.rows[0].total);
+        }
+      }
+      const postGcashWd = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND created_at > $1`, [lastClosedAt]);
+      const postGcashWdTotal = Number(postGcashWd.rows[0].total);
+      if (postGcashWdTotal) {
+        closedTotalGcash -= postGcashWdTotal;
+        if (!isTodayClosed) {
+          const postGcashWdToday = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
+          closedGcashWdDisplay += Number(postGcashWdToday.rows[0].total);
+        }
+      }
       // Money transfers: affect counted totals (previous sale)
       const postCashTransfersOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND created_at > $1`, [lastClosedAt]);
       const postCashTransfersIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND created_at > $1`, [lastClosedAt]);
@@ -2326,6 +2432,11 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       const todayGcashExp = Number(running.gcash_expenses ?? 0);
       if (todayCashExp) { closedTotalCash -= todayCashExp; closedCashExpDisplay += todayCashExp; }
       if (todayGcashExp) { closedTotalGcash -= todayGcashExp; closedGcashExpDisplay += todayGcashExp; }
+      // Also deduct today's profit withdrawals even with no counted day
+      const todayCashWd = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      const todayGcashWd = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      if (Number(todayCashWd.rows[0].total)) { closedTotalCash -= Number(todayCashWd.rows[0].total); closedCashWdDisplay += Number(todayCashWd.rows[0].total); }
+      if (Number(todayGcashWd.rows[0].total)) { closedTotalGcash -= Number(todayGcashWd.rows[0].total); closedGcashWdDisplay += Number(todayGcashWd.rows[0].total); }
       // Also apply today's transfers even with no counted day
       const todayCashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
       const todayCashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
@@ -2335,6 +2446,36 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       closedTotalGcash += Number(todayGcashTransIn.rows[0].total) - Number(todayGcashTransOut.rows[0].total);
     }
 
+    // Today's gross profit (all completed sales today, Manila time) — the
+    // basis for how much profit the owner can take home today.
+    const { start: todayStart, end: todayEnd } = manilaDayBounds(today);
+    const todayProfitRes = await pool.query(
+      `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+       JOIN products p ON p.id = si.product_id
+       WHERE s.created_at >= $1 AND s.created_at < $2`,
+      [todayStart, todayEnd]
+    );
+    const todayGrossProfit = Number(todayProfitRes.rows[0].gross_profit);
+    const takenTodayCashRes = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
+       WHERE (source_wallet='cash' OR source_wallet IS NULL) AND created_at >= $1 AND created_at < $2`,
+      [todayStart, todayEnd]
+    );
+    const takenTodayGcashRes = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
+       WHERE source_wallet='gcash' AND created_at >= $1 AND created_at < $2`,
+      [todayStart, todayEnd]
+    );
+    const takenTodayCash = Number(takenTodayCashRes.rows[0].total);
+    const takenTodayGcash = Number(takenTodayGcashRes.rows[0].total);
+    const recentWithdrawals = await pool.query(
+      `SELECT w.*, u.name AS created_by_name FROM profit_withdrawals w
+       LEFT JOIN users u ON u.id = w.created_by
+       ORDER BY w.created_at DESC LIMIT 10`
+    );
+
     const closed = {
       cash_sales: Number(closedCashSales.rows[0].total),
       gcash_sales: Number(closedGcashSales.rows[0].total),
@@ -2342,12 +2483,22 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       gcash_utang_payments: Number(closedGcashPayments.rows[0].total),
       cash_expenses: closedCashExpDisplay,
       gcash_expenses: closedGcashExpDisplay,
+      cash_withdrawals: closedCashWdDisplay,
+      gcash_withdrawals: closedGcashWdDisplay,
       total_cash: closedTotalCash,
       total_gcash: closedTotalGcash,
       closed_days: closedDays,
     };
 
-    res.json({ shift, running, pending: pending.rows, closed });
+    const profit = {
+      today_gross: todayGrossProfit,
+      taken_today_cash: takenTodayCash,
+      taken_today_gcash: takenTodayGcash,
+      taken_today_total: takenTodayCash + takenTodayGcash,
+      available_today: Math.max(todayGrossProfit - takenTodayCash - takenTodayGcash, 0),
+    };
+
+    res.json({ shift, running, pending: pending.rows, closed, profit, withdrawals: recentWithdrawals.rows });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load current shift' });
@@ -2377,8 +2528,9 @@ app.post('/api/shift/opening-cash', requireAuth, async (req, res) => {
 
 // Reset Cash Drawer to zero: clears all shift history and records a baseline
 // timestamp. Drawer KPIs ignore everything created before the reset moment
-// (including any manual "zeroing" expense made earlier today). Sales, expenses
-// and transfers records are kept in history; only the drawer baseline resets.
+// (including any manual "zeroing" expense made earlier today). Sales, expenses,
+// transfers and profit-withdrawal records are kept in history; only the drawer
+// baseline resets.
 app.post('/api/shift/reset', requireAuth, requireRole('owner'), async (req, res) => {
   try {
     await pool.query(`DELETE FROM cash_shifts`);
@@ -2462,25 +2614,43 @@ app.post('/api/shift/:id/close', requireAuth, async (req, res) => {
 
 // Enrich a closed shift with full-day breakdown (debt from credit + GCash paid).
 // Uses stored snapshot when present, otherwise recomputes from sales/utang/expenses.
+// Always attaches that day's profit withdrawals (owner's take-home, not an expense).
 async function enrichShiftRow(shift) {
+  const attachWithdrawals = async (row) => {
+    try {
+      const dateStr = dbDateToManila(row.shift_date);
+      const { start, end } = manilaDayBounds(dateStr);
+      const wd = await pool.query(
+        `SELECT COALESCE(SUM(amount) FILTER (WHERE source_wallet = 'cash' OR source_wallet IS NULL), 0) AS cash_wd,
+                COALESCE(SUM(amount) FILTER (WHERE source_wallet = 'gcash'), 0) AS gcash_wd
+         FROM profit_withdrawals WHERE created_at >= $1 AND created_at < $2`,
+        [start, end]
+      );
+      const cashWd = Number(wd.rows[0].cash_wd);
+      const gcashWd = Number(wd.rows[0].gcash_wd);
+      return { ...row, cash_withdrawals: cashWd, gcash_withdrawals: gcashWd, profit_taken: cashWd + gcashWd };
+    } catch {
+      return { ...row, cash_withdrawals: 0, gcash_withdrawals: 0, profit_taken: 0 };
+    }
+  };
   const needsCompute =
     shift.cash_sales == null || shift.cash_utang_payments == null ||
     shift.gcash_utang_payments == null || shift.cash_expenses == null ||
     shift.gcash_expenses == null || shift.expected_gcash == null;
   if (!needsCompute) {
     const gcashReceived = Number(shift.gcash_sales || 0) + Number(shift.gcash_utang_payments || 0);
-    return {
+    return attachWithdrawals({
       ...shift,
       gcash_received: gcashReceived,
       gcash_in_hand: gcashReceived - Number(shift.gcash_expenses || 0),
-    };
+    });
   }
   try {
     const dateStr = dbDateToManila(shift.shift_date);
     const { start, end } = manilaDayBounds(dateStr);
     const full = await computeExpectedCash(shift.opening_cash || 0, start, end);
     const gcashReceived = full.gcash_sales + full.gcash_utang_payments;
-    return {
+    return attachWithdrawals({
       ...shift,
       cash_sales: shift.cash_sales ?? full.cash_sales,
       cash_utang_payments: shift.cash_utang_payments ?? full.cash_utang_payments,
@@ -2492,9 +2662,9 @@ async function enrichShiftRow(shift) {
       expected_gcash: shift.expected_gcash ?? full.expected_gcash,
       gcash_received: gcashReceived,
       gcash_in_hand: gcashReceived - (Number(shift.gcash_expenses ?? full.gcash_expenses)),
-    };
+    });
   } catch {
-    return shift;
+    return attachWithdrawals(shift);
   }
 }
 
@@ -2574,6 +2744,41 @@ app.post('/api/transfers', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to create transfer' });
+  }
+});
+
+// Profit withdrawals: owner takes profit home. Deducts from the Cash Drawer
+// (like an expense) but is NEVER counted as an expense in profit reports,
+// so Net Profit = Gross − real expenses stays correct.
+app.get('/api/profit-withdrawals', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT w.*, u.name AS created_by_name
+      FROM profit_withdrawals w
+      LEFT JOIN users u ON u.id = w.created_by
+      ORDER BY w.created_at DESC LIMIT 50
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load profit withdrawals' });
+  }
+});
+
+app.post('/api/profit-withdrawals', requireAuth, async (req, res) => {
+  const { amount, source_wallet, note } = req.body;
+  const wallet = source_wallet === 'gcash' ? 'gcash' : 'cash';
+  const amt = Number(amount);
+  if (!amt || amt <= 0) return res.status(400).json({ error: 'Amount must be > 0' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO profit_withdrawals (amount, source_wallet, note, created_by) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [amt, wallet, note || null, req.user.id]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to record profit withdrawal' });
   }
 });
 
