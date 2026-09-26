@@ -50,7 +50,7 @@ function StatCard({ label, value, change, icon: Icon }) {
   );
 }
 const expenseIcon = {
-  'Store Supplies': '🛍️', 'Utilities': '⚡', 'Rent': '🏠', 'Transportation': '🚗', 'Other': '📦',
+  'Restock': '📦', 'Store Supplies': '🛍️', 'Utilities': '⚡', 'Rent': '🏠', 'Transportation': '🚗', 'Other': '📦',
 };
 
 export default function Shift() {
@@ -522,7 +522,7 @@ export default function Shift() {
                   <div>
                     <label className="text-sm text-on-surface-variant">Category</label>
                     <select value={expenseForm.category} onChange={(e) => setExpenseForm((f) => ({ ...f, category: e.target.value }))} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
-                      <option>Store Supplies</option><option>Utilities</option><option>Rent</option><option>Transportation</option><option>Other</option>
+                      <option>Restock</option><option>Store Supplies</option><option>Utilities</option><option>Rent</option><option>Transportation</option><option>Other</option>
                     </select>
                   </div>
                   <div>

@@ -1775,9 +1775,13 @@ app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, 
 });
 
 // Bulk restock: add stock to many products in one tap (audit-style).
-// Body: { items: [{ product_id, quantity (pieces), cost_price (per piece, optional) }] }
+// Body: { items: [{ product_id, quantity (pieces), cost_price (per piece, optional) }], payment_method: 'cash'|'gcash' }
+// The total purchase cost (qty × effective cost/piece — new cost if given,
+// otherwise the product's current cost) is auto-recorded as a Restock
+// expense so the Cash Drawer deducts it immediately.
 app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async (req, res) => {
-  const { items } = req.body;
+  const { items, payment_method } = req.body;
+  const method = payment_method === 'gcash' ? 'gcash' : 'cash';
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'No stock-in entries to save' });
   }
@@ -1787,6 +1791,8 @@ app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async 
     await client.query('BEGIN');
     const batchId = crypto.randomUUID();
     const saved = [];
+    let totalCost = 0;
+    const descParts = [];
     for (const it of items) {
       const qty = Number(it.quantity);
       if (!it.product_id || !Number.isFinite(qty) || qty <= 0) {
@@ -1817,9 +1823,23 @@ app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async 
         [updated.id, updated.name, qty, oldQty, Number(updated.stock_quantity), oldCost, updated.cost_price == null ? null : Number(updated.cost_price), req.user.id, batchId]
       );
       saved.push(result.rows[0]);
+      // Drawer deduction: new cost if supplied, else the kept current cost.
+      const effectiveCost = cost !== null ? cost : (oldCost || 0);
+      totalCost += qty * effectiveCost;
+      descParts.push(`${updated.name} +${qty}`);
+    }
+    totalCost = Math.round(totalCost * 100) / 100;
+    let expense = null;
+    if (totalCost > 0) {
+      const preview = descParts.slice(0, 3).join(', ') + (descParts.length > 3 ? ` +${descParts.length - 3} more` : '');
+      const expRes = await client.query(
+        `INSERT INTO expenses (category, amount, description, payment_method) VALUES ('Restock', $1, $2, $3) RETURNING *`,
+        [totalCost, `Stock in: ${preview}`, method]
+      );
+      expense = expRes.rows[0];
     }
     await client.query('COMMIT');
-    res.status(201).json({ saved, count: saved.length, batch_id: batchId });
+    res.status(201).json({ saved, count: saved.length, batch_id: batchId, total_cost: totalCost, expense });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
@@ -1830,7 +1850,8 @@ app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async 
 });
 
 app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (req, res) => {
-  const { quantity, cost_price } = req.body;
+  const { quantity, cost_price, payment_method } = req.body;
+  const method = payment_method === 'gcash' ? 'gcash' : 'cash';
   const qty = Number(quantity);
 
   if (!qty || qty <= 0) {
@@ -1867,8 +1888,19 @@ app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [updated.id, updated.name, qty, oldQty, Number(updated.stock_quantity), oldCost, updated.cost_price == null ? null : Number(updated.cost_price), req.user.id, crypto.randomUUID()]
     );
+    // Drawer deduction: new cost if supplied, else the kept current cost.
+    const effectiveCost = cost !== null ? cost : (oldCost || 0);
+    const totalCost = Math.round(qty * effectiveCost * 100) / 100;
+    let expense = null;
+    if (totalCost > 0) {
+      const expRes = await client.query(
+        `INSERT INTO expenses (category, amount, description, payment_method) VALUES ('Restock', $1, $2, $3) RETURNING *`,
+        [totalCost, `Stock in: ${updated.name} +${qty}`, method]
+      );
+      expense = expRes.rows[0];
+    }
     await client.query('COMMIT');
-    res.json(updated);
+    res.json({ ...updated, total_cost: totalCost, expense });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error(err);

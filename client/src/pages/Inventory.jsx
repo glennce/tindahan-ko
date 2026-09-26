@@ -54,6 +54,7 @@ function Inventory() {
   const [stockinSearch, setStockinSearch] = useState('');
   const [stockinCategory, setStockinCategory] = useState('All');
   const [stockinSaving, setStockinSaving] = useState(false);
+  const [stockinPayMethod, setStockinPayMethod] = useState('cash');
   const [restockLogs, setRestockLogs] = useState([]);
   const [restockSearch, setRestockSearch] = useState('');
   const [restockPage, setRestockPage] = useState(1);
@@ -229,6 +230,17 @@ function Inventory() {
     return stockinPiecesFor(p, row) > 0;
   }).length;
 
+  // Drawer deduction preview: qty × (new cost if typed, else current cost)
+  const stockinTotalCost = Object.entries(stockinRows).reduce((sum, [id, row]) => {
+    const p = products.find((x) => String(x.id) === String(id));
+    if (!p || !row) return sum;
+    const pieces = stockinPiecesFor(p, row);
+    if (!(pieces > 0)) return sum;
+    const newCost = stockinCostPerPieceFor(p, row);
+    const effective = newCost != null && newCost !== -1 ? newCost : Number(p.cost_price || 0);
+    return sum + pieces * effective;
+  }, 0);
+
   const handleBulkStockIn = async () => {
     const byId = Object.fromEntries(products.map((p) => [String(p.id), p]));
     const items = [];
@@ -249,7 +261,7 @@ function Inventory() {
     try {
       const res = await apiFetch(`${API}/restock/bulk`, {
         method: 'POST',
-        body: JSON.stringify({ items }),
+        body: JSON.stringify({ items, payment_method: stockinPayMethod }),
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Stock-in failed');
@@ -261,7 +273,12 @@ function Inventory() {
       });
       fetchProducts();
       fetchAudits();
-      showToast(`Stocked in ${savedIds.size} product${savedIds.size === 1 ? '' : 's'}`);
+      const deducted = Number(result.total_cost || 0);
+      showToast(
+        deducted > 0
+          ? `Stocked in ${savedIds.size} product${savedIds.size === 1 ? '' : 's'} — ₱${deducted.toFixed(2)} deducted from ${stockinPayMethod === 'gcash' ? 'GCash' : 'Cash Drawer'}`
+          : `Stocked in ${savedIds.size} product${savedIds.size === 1 ? '' : 's'}`
+      );
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
@@ -425,6 +442,12 @@ function Inventory() {
         )}
         <div className="flex gap-2">
           <button
+            onClick={() => setRepackOpen(true)}
+            className="border border-primary text-primary font-medium px-4 py-2 rounded-lg"
+          >
+            Repack
+          </button>
+          <button
             onClick={openAddModal}
             className="bg-primary text-on-primary font-medium px-4 py-2 rounded-lg"
           >
@@ -449,7 +472,7 @@ function Inventory() {
         <div className="space-y-4">
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
             <h2 className="font-semibold text-blue-800 text-sm mb-1">Restock many products at once</h2>
-            <p className="text-blue-700 text-xs">Fill in packs / loose pieces / cost per pack for every delivery below, then hit one button — same inputs as the old Stock In form, just all on one page.</p>
+            <p className="text-blue-700 text-xs">Fill in packs / loose pieces / cost per pack for every delivery below, then hit one button. The total purchase cost is auto-deducted from your Cash Drawer (Cash or GCash) as a Restock expense. Leave Cost/pack blank to use the current cost — e.g. Camel ₱145/pack — or type a new one if the supplier raised it to ₱147.</p>
           </div>
 
           <div className="bg-surface border border-outline-variant rounded-xl p-4 lg:p-6">
@@ -561,11 +584,33 @@ function Inventory() {
                 </button>
               </div>
             </div>
+            <div className="bg-surface-container-low rounded-xl p-3 mt-2 mb-1">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
+                <div className="text-sm">
+                  <span className="text-on-surface-variant">Drawer deduction: </span>
+                  <span className="font-bold text-error">₱{stockinTotalCost.toFixed(2)}</span>
+                  <span className="block text-xs font-normal text-on-surface-variant">qty × {`new cost (if typed) else current cost`} · recorded as Restock expense</span>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <span className="text-xs text-on-surface-variant">Deduct from:</span>
+                  {['cash', 'gcash'].map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setStockinPayMethod(m)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium capitalize border ${stockinPayMethod === m ? 'bg-primary text-on-primary border-primary' : 'bg-surface text-on-surface-variant border-outline-variant'}`}
+                    >
+                      {m === 'cash' ? 'Cash' : 'GCash'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
             <button
               onClick={handleBulkStockIn} disabled={stockinSaving || stockinPendingCount === 0}
               className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg disabled:opacity-50 mt-1"
             >
-              {stockinSaving ? 'Saving...' : stockinPendingCount > 0 ? `Confirm Stock In (${stockinPendingCount})` : 'Confirm Stock In'}
+              {stockinSaving ? 'Saving...' : stockinPendingCount > 0 ? `Confirm Stock In (${stockinPendingCount}) — ₱${stockinTotalCost.toFixed(2)}` : 'Confirm Stock In'}
             </button>
           </div>
 
@@ -650,7 +695,9 @@ function Inventory() {
                     {new Date(selectedRestock.created_at).toLocaleString()} · {selectedRestock.created_by_name || '—'} · {selectedRestock.item_count} product{selectedRestock.item_count === 1 ? '' : 's'}
                   </p>
                   <div className="space-y-2 mb-3">
-                    {(selectedRestock.items || []).map((it) => (
+                    {(selectedRestock.items || []).map((it) => {
+                      const lineCost = Number(it.qty_added || 0) * Number(it.new_cost ?? it.old_cost ?? 0);
+                      return (
                       <div key={it.id} className="border-t border-outline-variant pt-2">
                         <div className="flex justify-between text-sm">
                           <span className="text-on-surface font-medium">{it.product_name}</span>
@@ -664,12 +711,24 @@ function Inventory() {
                               : ''}
                           </span>
                         </div>
+                        {lineCost > 0 && (
+                          <p className="text-xs text-error mt-0.5">Cost: ₱{lineCost.toFixed(2)} deducted from drawer</p>
+                        )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   <div className="flex justify-between font-bold text-on-surface border-t border-outline-variant pt-2">
                     <span>Total added</span><span>+{selectedRestock.total_qty}</span>
                   </div>
+                  {(() => {
+                    const batchCost = (selectedRestock.items || []).reduce((s, it) => s + Number(it.qty_added || 0) * Number(it.new_cost ?? it.old_cost ?? 0), 0);
+                    return batchCost > 0 ? (
+                      <div className="flex justify-between font-bold text-error pt-1">
+                        <span>Deducted from drawer</span><span>₱{batchCost.toFixed(2)}</span>
+                      </div>
+                    ) : null;
+                  })()}
                 </div>
               </div>
             </>
