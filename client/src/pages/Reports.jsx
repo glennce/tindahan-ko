@@ -465,6 +465,7 @@ function ProductReport({ start, end, onDatesChange }) {
   const [forecastWeeks, setForecastWeeks] = useState(4);
   const [bufferPct, setBufferPct] = useState(10);
   const [forecastMap, setForecastMap] = useState({});
+  const [forecastList, setForecastList] = useState([]);
   const [forecastMeta, setForecastMeta] = useState(null);
 
   useEffect(() => {
@@ -545,6 +546,7 @@ function ProductReport({ start, end, onDatesChange }) {
       if (!r.ok) return;
       setForecastMeta({ weeks: d.weeks, buffer_pct: d.buffer_pct, start: d.start, end: d.end });
       setForecastMap(Object.fromEntries((d.items || []).map((it) => [Number(it.id), it])));
+      setForecastList(d.items || []);
     }).catch(() => {});
   }, [forecastWeeks, bufferPct, category]);
 
@@ -566,6 +568,25 @@ function ProductReport({ start, end, onDatesChange }) {
     downloadCsv(`products-${category || 'all'}-${start}-to-${end}.csv`, rows);
   };
   const getForecast = (p) => forecastMap[Number(p.id)];
+  // All-products list: forecast endpoint returns EVERY product (LEFT JOIN),
+  // while top_products only has sellers in the selected range (INNER JOIN).
+  // Merge so zero-sellers still show with 0 sold + forecast buy suggestion.
+  const getAllProducts = () => {
+    const sales = data?.top_products || [];
+    if (!forecastList || forecastList.length === 0) return sales;
+    const salesMap = Object.fromEntries(sales.map((p) => [Number(p.id), p]));
+    const merged = forecastList.map((f) => ({
+      ...f,
+      qty_sold: salesMap[Number(f.id)]?.qty_sold ?? 0,
+      revenue: salesMap[Number(f.id)]?.revenue ?? 0,
+    }));
+    const forecastIds = new Set(forecastList.map((f) => Number(f.id)));
+    sales.forEach((p) => {
+      if (!forecastIds.has(Number(p.id))) merged.push({ ...p, buy_label: '—' });
+    });
+    merged.sort((a, b) => Number(b.qty_sold || 0) - Number(a.qty_sold || 0) || String(a.name).localeCompare(String(b.name)));
+    return merged;
+  };
 
   return (
     <div className="space-y-4">
@@ -648,10 +669,10 @@ function ProductReport({ start, end, onDatesChange }) {
           {data.top_products && (
             <div className="bg-surface border border-outline-variant rounded-xl p-4">
               <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
-                <h3 className="font-semibold text-on-surface">{category ? `Products in ${category} — ${data.top_products.length} products` : `All Products in Range — ${data.top_products.length} products`}</h3>
+                <h3 className="font-semibold text-on-surface">{category ? `Products in ${category} — ${getAllProducts().length} products` : `All Products — ${getAllProducts().length} products`}</h3>
                 <div className="flex items-center gap-3">
                   <button onClick={() => setShowAll(!showAll)} className="text-primary text-sm font-medium">
-                    {showAll ? 'Show Top 10' : `Show All (${data.top_products.length})`}
+                    {showAll ? 'Show Top 10' : `Show All (${getAllProducts().length})`}
                   </button>
                 </div>
               </div>
@@ -673,7 +694,8 @@ function ProductReport({ start, end, onDatesChange }) {
               </div>
               <input type="text" placeholder="Search products..." value={productSearch} onChange={(e) => setProductSearch(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mb-3 text-sm" />
               {(() => {
-                const filtered = data.top_products.filter((p) => p.name.toLowerCase().includes(productSearch.toLowerCase()) || (p.category||'').toLowerCase().includes(productSearch.toLowerCase()));
+                const all = getAllProducts();
+                const filtered = all.filter((p) => p.name.toLowerCase().includes(productSearch.toLowerCase()) || (p.category||'').toLowerCase().includes(productSearch.toLowerCase()));
                 const display = showAll ? filtered : filtered.slice(0, 10);
                 if (filtered.length === 0) return <p className="text-on-surface-variant text-sm">No products found.</p>;
                 return (
