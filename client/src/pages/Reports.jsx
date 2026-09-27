@@ -60,8 +60,94 @@ function suggestOrder(p, days, soldMap) {
   return { soldLabel, buyLabel };
 }
 
-async function exportRestockPdf(data, start, end) {
+/* Export all-products forecast (To Buy next 7d) as a PDF, grouped by category.
+   Same style as the Inventory Restock List. Items are the merged all-products
+   list: qty_sold/revenue cover the selected range, weekly_avg/forecast_qty/
+   buy_label come from /api/reports/forecast. */
+async function exportForecastPdf(items, meta, start, end, category) {
   const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  const doc = new jsPDF();
+  const dateStr = today();
+  const pageW = doc.internal.pageSize.getWidth();
+  const weeks = meta?.weeks ?? 4;
+  const bufferPct = meta?.buffer_pct ?? 10;
+  const fRange = meta ? `${meta.start} to ${meta.end}` : '';
+
+  doc.setFontSize(16);
+  doc.text('Forecast — To Buy Next 7 Days', 14, 16);
+  doc.setFontSize(10);
+  doc.setTextColor(100);
+  doc.text(
+    `Generated: ${dateStr} · Last ${weeks}w avg (${fRange}) +${bufferPct}% · Sold range ${start} to ${end}${category ? ` · ${category}` : ''} · ${items.length} item(s)`,
+    14,
+    23
+  );
+  doc.setTextColor(0);
+
+  if (!items || items.length === 0) {
+    doc.setFontSize(12);
+    doc.text('No products to export.', 14, 36);
+    doc.save(`forecast-to-buy-${dateStr}.pdf`);
+    return;
+  }
+
+  const groups = {};
+  items.forEach((p) => {
+    const cat = (p.category || 'Others').trim() || 'Others';
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(p);
+  });
+  const sortedCats = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  sortedCats.forEach((cat) => {
+    groups[cat].sort((a, b) => Number(b.qty_sold || 0) - Number(a.qty_sold || 0) || String(a.name).localeCompare(String(b.name)));
+  });
+
+  let y = 30;
+  sortedCats.forEach((cat) => {
+    const list = groups[cat];
+    if (y > doc.internal.pageSize.getHeight() - 40) {
+      doc.addPage();
+      y = 16;
+    }
+    doc.setFontSize(12);
+    doc.setFont(undefined, 'bold');
+    doc.text(`${cat} (${list.length})`, 14, y);
+    doc.setFont(undefined, 'normal');
+    y += 2;
+
+    autoTable(doc, {
+      startY: y,
+      head: [['Product', 'Stock', `Sold (${start} to ${end})`, 'Avg/Wk', 'Forecast', 'To Buy']],
+      body: list.map((p) => [
+        p.name,
+        String(p.stock_quantity ?? 0),
+        `${Number(p.qty_sold || 0)} sold`,
+        p.weekly_avg ?? '—',
+        p.forecast_qty ?? '—',
+        p.buy_label ?? '—',
+      ]),
+      styles: { fontSize: 9, cellPadding: 2 },
+      headStyles: { fillColor: [37, 99, 235] },
+      margin: { left: 14, right: 14 },
+    });
+    y = doc.lastAutoTable.finalY + 10;
+  });
+
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(130);
+    doc.text(`Page ${i} of ${pages} · Tindahan Ko`, pageW - 14, doc.internal.pageSize.getHeight() - 8, { align: 'right' });
+  }
+
+  doc.save(`forecast-to-buy-${dateStr}.pdf`);
+}
+
+async function exportRestockPdf(data, start, end) {  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
     import('jspdf'),
     import('jspdf-autotable'),
   ]);
@@ -729,12 +815,20 @@ function ProductReport({ start, end, onDatesChange }) {
                         </tbody>
                       </table>
                     </div>
-                    <button
-                      onClick={() => handleExportProducts(filtered)}
-                      className="text-primary text-sm font-medium mt-3 flex items-center gap-1"
-                    >
-                      <Download size={14} /> Export products CSV
-                    </button>
+                    <div className="flex flex-wrap gap-2 mt-3">
+                      <button
+                        onClick={() => handleExportProducts(filtered)}
+                        className="text-primary text-sm font-medium flex items-center gap-1"
+                      >
+                        <Download size={14} /> Export products CSV
+                      </button>
+                      <button
+                        onClick={() => exportForecastPdf(filtered, forecastMeta, start, end, category)}
+                        className="text-primary text-sm font-medium flex items-center gap-1"
+                      >
+                        <Download size={14} /> Export forecast PDF
+                      </button>
+                    </div>
                   </>
                 );
               })()}
