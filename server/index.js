@@ -1707,6 +1707,88 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
   }
 });
 
+// Next-week restock forecast (v1: 4-week average + buffer).
+// GET /api/reports/forecast?weeks=4&buffer_pct=10&category=Yosi
+// weeks: 1-12 (default 4), buffer_pct: 0-100 (default 10).
+// weekly_avg = total sold in last (weeks*7 days) / weeks
+// forecast  = weekly_avg * (1 + buffer)
+// needed    = max(ceil(forecast - stock), ceil(threshold - stock), 0)
+// packs     = ceil(needed / units_per_pack) when pack size is known.
+app.get('/api/reports/forecast', requireAuth, requireRole('owner'), async (req, res) => {
+  let weeks = parseInt(req.query.weeks, 10);
+  if (!Number.isFinite(weeks)) weeks = 4;
+  weeks = Math.min(Math.max(weeks, 1), 12);
+  let bufferPct = Number(req.query.buffer_pct);
+  if (!Number.isFinite(bufferPct)) bufferPct = 10;
+  bufferPct = Math.min(Math.max(bufferPct, 0), 100);
+  const buffer = bufferPct / 100;
+  const { category } = req.query;
+  try {
+    const end = manilaToday();
+    const start = addDaysToManilaDate(end, -(weeks * 7 - 1));
+    const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
+
+    const params = [rangeStart, rangeEnd];
+    let categoryFilter = '';
+    if (category) {
+      categoryFilter = `AND p.category = $3`;
+      params.push(category);
+    }
+    const rows = await pool.query(
+      `SELECT p.id, p.name, p.category, p.stock_quantity,
+              p.low_stock_threshold, p.units_per_pack, p.unit_label,
+              COALESCE(SUM(CASE WHEN s.created_at >= $1 AND s.created_at < $2 THEN si.quantity ELSE 0 END), 0) AS total_sold
+       FROM products p
+       LEFT JOIN sale_items si ON si.product_id = p.id
+       LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+       WHERE 1=1 ${categoryFilter}
+       GROUP BY p.id, p.name, p.category, p.stock_quantity,
+                p.low_stock_threshold, p.units_per_pack, p.unit_label
+       ORDER BY total_sold DESC`,
+      params
+    );
+    const items = rows.rows.map((r) => {
+      const totalSold = Number(r.total_sold || 0);
+      const stock = Number(r.stock_quantity || 0);
+      const threshold = Number(r.low_stock_threshold ?? 0);
+      const perPack = Number(r.units_per_pack) || 0;
+      const weeklyAvg = totalSold / weeks;
+      const forecast = weeklyAvg * (1 + buffer);
+      const needed = Math.max(
+        Math.ceil(forecast - stock - 1e-9),
+        Math.ceil(threshold - stock - 1e-9),
+        0
+      );
+      const packs = perPack > 0 ? Math.ceil((needed - 1e-9) / perPack) : needed;
+      const buyLabel =
+        needed <= 0
+          ? '—'
+          : perPack > 0
+            ? `${packs} pack${packs === 1 ? '' : 's'} (${needed} pcs)`
+            : `${needed} pcs`;
+      return {
+        id: r.id,
+        name: r.name,
+        category: r.category,
+        stock_quantity: stock,
+        low_stock_threshold: threshold,
+        units_per_pack: perPack || null,
+        unit_label: r.unit_label,
+        total_sold: totalSold,
+        weekly_avg: Math.round(weeklyAvg * 100) / 100,
+        forecast_qty: Math.round(forecast * 100) / 100,
+        suggested_qty: needed,
+        suggested_packs: perPack > 0 ? packs : null,
+        buy_label: buyLabel,
+      };
+    });
+    res.json({ weeks, buffer_pct: bufferPct, start, end, items });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load forecast' });
+  }
+});
+
 app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });

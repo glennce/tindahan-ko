@@ -462,6 +462,10 @@ function ProductReport({ start, end, onDatesChange }) {
   const [loading, setLoading] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [productSearch, setProductSearch] = useState('');
+  const [forecastWeeks, setForecastWeeks] = useState(4);
+  const [bufferPct, setBufferPct] = useState(10);
+  const [forecastMap, setForecastMap] = useState({});
+  const [forecastMeta, setForecastMeta] = useState(null);
 
   useEffect(() => {
     apiFetch('/products').then((r) => r.json()).then(setProducts).catch(() => {});
@@ -533,6 +537,17 @@ function ProductReport({ start, end, onDatesChange }) {
 
   useEffect(() => { load(); }, [start, end, granularity, category]);
 
+  useEffect(() => {
+    const params = new URLSearchParams({ weeks: forecastWeeks, buffer_pct: bufferPct });
+    if (category) params.set('category', category);
+    apiFetch(`/reports/forecast?${params}`).then(async (r) => {
+      const d = await r.json();
+      if (!r.ok) return;
+      setForecastMeta({ weeks: d.weeks, buffer_pct: d.buffer_pct, start: d.start, end: d.end });
+      setForecastMap(Object.fromEntries((d.items || []).map((it) => [Number(it.id), it])));
+    }).catch(() => {});
+  }, [forecastWeeks, bufferPct, category]);
+
   const handleExport = () => {
     if (!data || !data.trend) return;
     const rows = [['Period', 'Qty Sold', 'Revenue', 'Transactions'], ...data.trend.map((t) => [t.period, t.qty_sold, t.revenue.toFixed(2), t.transactions])];
@@ -542,11 +557,15 @@ function ProductReport({ start, end, onDatesChange }) {
   const handleExportProducts = (productsToExport) => {
     if (!productsToExport || productsToExport.length === 0) return;
     const rows = [
-      ['Product', 'Category', 'Qty Sold', 'Revenue', 'Available'],
-      ...productsToExport.map((p) => [p.name, p.category || '', p.qty_sold, Number(p.revenue).toFixed(2), getAvailable(p)]),
+      ['Product', 'Category', 'Qty Sold', 'Revenue', 'Available', `Avg/Wk (${forecastMeta?.weeks ?? forecastWeeks}w)`, 'Forecast Need', 'To Buy (next 7d)'],
+      ...productsToExport.map((p) => {
+        const f = forecastMap[Number(p.id)];
+        return [p.name, p.category || '', p.qty_sold, Number(p.revenue).toFixed(2), getAvailable(p), f?.weekly_avg ?? '', f?.forecast_qty ?? '', f?.buy_label ?? ''];
+      }),
     ];
     downloadCsv(`products-${category || 'all'}-${start}-to-${end}.csv`, rows);
   };
+  const getForecast = (p) => forecastMap[Number(p.id)];
 
   return (
     <div className="space-y-4">
@@ -628,13 +647,29 @@ function ProductReport({ start, end, onDatesChange }) {
 
           {data.top_products && (
             <div className="bg-surface border border-outline-variant rounded-xl p-4">
-              <div className="flex justify-between items-center mb-3">
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
                 <h3 className="font-semibold text-on-surface">{category ? `Products in ${category} — ${data.top_products.length} products` : `All Products in Range — ${data.top_products.length} products`}</h3>
                 <div className="flex items-center gap-3">
                   <button onClick={() => setShowAll(!showAll)} className="text-primary text-sm font-medium">
                     {showAll ? 'Show Top 10' : `Show All (${data.top_products.length})`}
                   </button>
                 </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
+                <span className="text-on-surface-variant text-xs">Next-week forecast based on last</span>
+                <select value={forecastWeeks} onChange={(e) => setForecastWeeks(Number(e.target.value))} className="border border-outline-variant rounded-lg px-2 py-1 text-sm">
+                  <option value={2}>2 weeks avg</option>
+                  <option value={4}>4 weeks avg</option>
+                  <option value={8}>8 weeks avg</option>
+                </select>
+                <select value={bufferPct} onChange={(e) => setBufferPct(Number(e.target.value))} className="border border-outline-variant rounded-lg px-2 py-1 text-sm">
+                  <option value={0}>+0% buffer</option>
+                  <option value={10}>+10% buffer</option>
+                  <option value={20}>+20% buffer</option>
+                </select>
+                {forecastMeta && (
+                  <span className="text-on-surface-variant text-xs">({forecastMeta.start} to {forecastMeta.end})</span>
+                )}
               </div>
               <input type="text" placeholder="Search products..." value={productSearch} onChange={(e) => setProductSearch(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mb-3 text-sm" />
               {(() => {
@@ -645,13 +680,14 @@ function ProductReport({ start, end, onDatesChange }) {
                   <>
                     {!showAll && filtered.length > 10 && <p className="text-xs text-on-surface-variant mb-2">Showing top 10 of {filtered.length} — click Show All to see all</p>}
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm min-w-[600px]">
+                      <table className="w-full text-left text-sm min-w-[720px]">
                         <thead className="bg-surface-container-low text-on-surface-variant">
                           <tr>
                             <th className="px-4 py-2">Product</th>
                             <th className="px-4 py-2">Qty Sold</th>
                             <th className="px-4 py-2">Revenue</th>
                             <th className="px-4 py-2">Available</th>
+                            <th className="px-4 py-2">To Buy (next 7d)</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -663,6 +699,9 @@ function ProductReport({ start, end, onDatesChange }) {
                               <td className="px-4 py-2 font-medium text-on-surface">{p.qty_sold} sold</td>
                               <td className="px-4 py-2 text-on-surface-variant">₱{Number(p.revenue).toFixed(2)}</td>
                               <td className="px-4 py-2 text-on-surface-variant">{formatStock(getFullProduct(p))}</td>
+                              <td className="px-4 py-2 font-medium text-on-surface" title={getForecast(p) ? `Avg ${getForecast(p).weekly_avg}/wk over ${forecastMeta?.weeks ?? forecastWeeks}w, forecast ${getForecast(p).forecast_qty} pcs` : 'No forecast yet'}>
+                                {getForecast(p)?.buy_label ?? '—'}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
