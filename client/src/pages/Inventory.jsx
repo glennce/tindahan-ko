@@ -64,6 +64,11 @@ function Inventory() {
   const STOCKIN_PER_PAGE = 20;
   const [auditCountPage, setAuditCountPage] = useState(1);
   const AUDIT_COUNT_PER_PAGE = 20;
+  // Combined history (stock-in + audit)
+  const [historyType, setHistoryType] = useState('all');
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyPage, setHistoryPage] = useState(1);
+  const HISTORY_PER_PAGE = 20;
 
   const fetchProducts = () => {
     setLoading(true);
@@ -172,6 +177,10 @@ function Inventory() {
   useEffect(() => {
     setAuditCountPage(1);
   }, [auditProductSearch, auditProductCategory]);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyType, historySearch]);
 
   const openAddModal = () => {
     setEditingProduct(null);
@@ -390,6 +399,42 @@ function Inventory() {
   });
   const restockTotalPages = Math.max(Math.ceil(filteredRestocks.length / RESTOCK_PER_PAGE), 1);
   const paginatedRestocks = filteredRestocks.slice((restockPage - 1) * RESTOCK_PER_PAGE, restockPage * RESTOCK_PER_PAGE);
+  // Combined history: stock-in batches + audit rows, newest first
+  const combinedHistory = [
+    ...restockBatches.map((b) => ({
+      kind: 'stockin',
+      id: `stockin-${b.batch_id}`,
+      created_at: b.created_at,
+      created_by_name: b.created_by_name,
+      productText: (b.items || []).map((it) => it.product_name).join(', '),
+      detailText: `${b.item_count} product${b.item_count === 1 ? '' : 's'} · +${b.total_qty}`,
+      changeText: `+${b.total_qty}`,
+      changeClass: 'text-secondary',
+      extra: `Stock In · ${b.item_count} product${b.item_count === 1 ? '' : 's'}`,
+      ref: b,
+    })),
+    ...adjustments.map((a) => ({
+      kind: 'audit',
+      id: `audit-${a.id}`,
+      created_at: a.created_at,
+      created_by_name: a.created_by_name,
+      productText: a.product_name || '',
+      detailText: `${a.system_qty} → ${a.counted_qty} · ${reasonLabel(a.reason)}${a.notes ? ` · ${a.notes}` : ''}`,
+      changeText: `${Number(a.difference) > 0 ? `+${a.difference}` : a.difference}`,
+      changeClass: Number(a.difference) < 0 ? 'text-error' : 'text-secondary',
+      extra: `Stock Audit · ${reasonLabel(a.reason)}`,
+      ref: a,
+    })),
+  ].sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
+  const filteredHistory = combinedHistory.filter((h) => {
+    if (historyType !== 'all' && h.kind !== historyType) return false;
+    const q = historySearch.trim().toLowerCase();
+    if (!q) return true;
+    return (h.productText || '').toLowerCase().includes(q) || (h.detailText || '').toLowerCase().includes(q);
+  });
+  const historyTotalPages = Math.max(Math.ceil(filteredHistory.length / HISTORY_PER_PAGE), 1);
+  const safeHistoryPage = Math.min(historyPage, historyTotalPages);
+  const paginatedHistory = filteredHistory.slice((safeHistoryPage - 1) * HISTORY_PER_PAGE, safeHistoryPage * HISTORY_PER_PAGE);
 
   return (
     <div>
@@ -457,7 +502,7 @@ function Inventory() {
       </div>
 
       <div className="flex gap-1 mb-6">
-        {[{ key: 'products', label: 'Products' }, { key: 'stockin', label: `Stock In${stockinPendingCount > 0 ? ` (${stockinPendingCount})` : ''}` }, { key: 'audit', label: `Stock Audit${auditSummary?.shortage_counts ? ` (${auditSummary.shortage_counts})` : ''}` }].map((t) => (
+        {[{ key: 'products', label: 'Products' }, { key: 'stockin', label: 'Stock In' }, { key: 'audit', label: 'Stock Audit' }, { key: 'history', label: 'History' }].map((t) => (
           <button
             key={t.key}
             onClick={() => setView(t.key)}
@@ -736,6 +781,52 @@ function Inventory() {
         </div>
       )}
 
+      {selectedRestock && view !== 'stockin' && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setSelectedRestock(null)} />
+          <div className="fixed inset-y-0 right-0 w-full max-w-md bg-surface shadow-2xl z-50 flex flex-col border-l border-outline-variant">
+            <div className="flex justify-between items-center px-4 py-3 border-b border-outline-variant">
+              <h2 className="font-semibold text-on-surface">Restock Details</h2>
+              <button onClick={() => setSelectedRestock(null)} className="text-on-surface-variant text-xl">
+                {'\u2715'}
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <p className="text-on-surface-variant text-sm mb-3">
+                {new Date(selectedRestock.created_at).toLocaleString()} · {selectedRestock.created_by_name || '—'} · {selectedRestock.item_count} product{selectedRestock.item_count === 1 ? '' : 's'}
+              </p>
+              <div className="space-y-2 mb-3">
+                {(selectedRestock.items || []).map((it) => {
+                  const lineCost = Number(it.qty_added || 0) * Number(it.new_cost ?? it.old_cost ?? 0);
+                  return (
+                  <div key={it.id} className="border-t border-outline-variant pt-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-on-surface font-medium">{it.product_name}</span>
+                      <span className="font-bold text-secondary">+{it.qty_added}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-on-surface-variant mt-0.5">
+                      <span>Stock: {it.old_qty} → {it.new_qty}</span>
+                      <span>
+                        {(it.old_cost != null || it.new_cost != null)
+                          ? `₱${Number(it.old_cost ?? 0).toFixed(2)} → ₱${Number(it.new_cost ?? 0).toFixed(2)}`
+                          : ''}
+                      </span>
+                    </div>
+                    {lineCost > 0 && (
+                      <p className="text-xs text-error mt-0.5">Cost: ₱{lineCost.toFixed(2)} deducted from drawer</p>
+                    )}
+                  </div>
+                  );
+                })}
+              </div>
+              <div className="flex justify-between font-bold text-on-surface border-t border-outline-variant pt-2">
+                <span>Total added</span><span>+{selectedRestock.total_qty}</span>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
       {view === 'audit' && (
         <div className="space-y-4">
           <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
@@ -897,6 +988,98 @@ function Inventory() {
                 <button
                   disabled={auditPage >= auditTotalPages}
                   onClick={() => setAuditPage((p) => p + 1)}
+                  className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'history' && (
+        <div className="space-y-4">
+          <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
+            <div className="p-4 border-b border-outline-variant flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between">
+              <div>
+                <h2 className="font-semibold text-on-surface">History</h2>
+                <p className="text-xs text-on-surface-variant">Combined stock-in and stock-audit activity, newest first.</p>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <select
+                  value={historyType}
+                  onChange={(e) => setHistoryType(e.target.value)}
+                  className="border border-outline-variant rounded-lg px-3 py-1.5 text-sm bg-surface"
+                >
+                  <option value="all">All types</option>
+                  <option value="stockin">Stock In</option>
+                  <option value="audit">Stock Audit</option>
+                </select>
+                <input
+                  type="text"
+                  placeholder="Search product or details..."
+                  value={historySearch}
+                  onChange={(e) => setHistorySearch(e.target.value)}
+                  className="border border-outline-variant rounded-lg px-3 py-1.5 text-sm"
+                />
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm min-w-[720px]">
+                <thead className="bg-surface-container-low text-on-surface-variant">
+                  <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Product(s)</th><th className="px-4 py-3">Change</th><th className="px-4 py-3">By</th><th className="px-4 py-3 text-right">Details</th></tr>
+                </thead>
+                <tbody>
+                  {paginatedHistory.map((h) => (
+                    <tr key={h.id} className="border-t border-outline-variant hover:bg-surface-container-low">
+                      <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">{new Date(h.created_at).toLocaleString()}</td>
+                      <td className="px-4 py-3">
+                        {h.kind === 'stockin'
+                          ? <span className="px-2 py-1 rounded-full text-xs font-medium bg-secondary-container text-secondary">Stock In</span>
+                          : <span className="px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-700">Stock Audit</span>}
+                      </td>
+                      <td className="px-4 py-3 text-on-surface">
+                        <span className="font-medium block truncate max-w-[320px]">{h.productText || '—'}</span>
+                        <span className="block text-xs font-normal text-on-surface-variant">{h.detailText}</span>
+                      </td>
+                      <td className={`px-4 py-3 font-bold ${h.changeClass}`}>{h.changeText}</td>
+                      <td className="px-4 py-3 text-on-surface-variant">{h.created_by_name || '—'}</td>
+                      <td className="px-4 py-3 text-right">
+                        {h.kind === 'stockin' ? (
+                          <button
+                            onClick={() => setSelectedRestock(h.ref)}
+                            className="p-1.5 text-primary hover:bg-primary-container hover:text-on-primary rounded-md transition-colors"
+                            title="View restocked products"
+                          >
+                            <Eye size={18} />
+                          </button>
+                        ) : (
+                          <span className="text-xs text-on-surface-variant">{h.extra}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredHistory.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-on-surface-variant">No history yet. Stock in products or run a shelf count and activity will show here.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-between items-center px-4 py-3 text-sm text-on-surface-variant border-t border-outline-variant">
+              <span>
+                Showing {filteredHistory.length === 0 ? 0 : (safeHistoryPage - 1) * HISTORY_PER_PAGE + 1}–{Math.min(safeHistoryPage * HISTORY_PER_PAGE, filteredHistory.length)} of {filteredHistory.length}
+              </span>
+              <div className="flex gap-1 items-center">
+                <button
+                  disabled={safeHistoryPage <= 1}
+                  onClick={() => setHistoryPage((p) => p - 1)}
+                  className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <span className="px-2 py-1">{safeHistoryPage} / {historyTotalPages}</span>
+                <button
+                  disabled={safeHistoryPage >= historyTotalPages}
+                  onClick={() => setHistoryPage((p) => p + 1)}
                   className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
                 >
                   Next
