@@ -69,6 +69,21 @@ async function exportForecastPdf(items, meta, start, end, category) {
     import('jspdf'),
     import('jspdf-autotable'),
   ]);
+  // Normalize to array: supports single string (back-compat) or array of categories.
+  // Only the selected categories are exported.
+  const selectedCats = Array.isArray(category)
+    ? category.filter(Boolean)
+    : category
+      ? [category]
+      : [];
+  const filteredItems = selectedCats.length > 0
+    ? (items || []).filter((p) => selectedCats.includes((p.category || 'Others').trim() || 'Others') || selectedCats.includes(p.category))
+    : (items || []);
+  const itemsToExport = filteredItems;
+  const categoryLabel = selectedCats.length > 0 ? selectedCats.join(', ') : 'All categories';
+  const fileSlug = selectedCats.length > 0
+    ? selectedCats.map((c) => String(c).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')).filter(Boolean).join('-').slice(0, 60) || 'selected'
+    : 'all';
   const doc = new jsPDF();
   const dateStr = today();
   const pageW = doc.internal.pageSize.getWidth();
@@ -81,21 +96,21 @@ async function exportForecastPdf(items, meta, start, end, category) {
   doc.setFontSize(10);
   doc.setTextColor(100);
   doc.text(
-    `Generated: ${dateStr} · Last ${weeks}w avg (${fRange}) +${bufferPct}% · Sold range ${start} to ${end}${category ? ` · ${category}` : ''} · ${items.length} item(s)`,
+    `Generated: ${dateStr} · Last ${weeks}w avg (${fRange}) +${bufferPct}% · Sold range ${start} to ${end} · ${categoryLabel} · ${itemsToExport.length} item(s)`,
     14,
     23
   );
   doc.setTextColor(0);
 
-  if (!items || items.length === 0) {
+  if (!itemsToExport || itemsToExport.length === 0) {
     doc.setFontSize(12);
-    doc.text('No products to export.', 14, 36);
-    doc.save(`forecast-to-buy-${dateStr}.pdf`);
+    doc.text(`No products to export${selectedCats.length > 0 ? ` for: ${categoryLabel}` : '.'}`, 14, 36);
+    doc.save(`forecast-to-buy-${fileSlug}-${dateStr}.pdf`);
     return;
   }
 
   const groups = {};
-  items.forEach((p) => {
+  itemsToExport.forEach((p) => {
     const cat = (p.category || 'Others').trim() || 'Others';
     if (!groups[cat]) groups[cat] = [];
     groups[cat].push(p);
@@ -144,10 +159,11 @@ async function exportForecastPdf(items, meta, start, end, category) {
     doc.text(`Page ${i} of ${pages} · Tindahan Ko`, pageW - 14, doc.internal.pageSize.getHeight() - 8, { align: 'right' });
   }
 
-  doc.save(`forecast-to-buy-${dateStr}.pdf`);
+  doc.save(`forecast-to-buy-${fileSlug}-${dateStr}.pdf`);
 }
 
-async function exportRestockPdf(data, start, end) {  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+async function exportRestockPdf(data, start, end) {
+  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
     import('jspdf'),
     import('jspdf-autotable'),
   ]);
@@ -542,7 +558,8 @@ function UtangReport({ data }) {
 
 function ProductReport({ start, end, onDatesChange }) {
   const [products, setProducts] = useState([]);
-  const [category, setCategory] = useState('');
+  const [selectedCategories, setSelectedCategories] = useState([]);
+  const [catOpen, setCatOpen] = useState(false);
   const [granularity, setGranularity] = useState('day');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -559,6 +576,12 @@ function ProductReport({ start, end, onDatesChange }) {
   }, []);
 
   const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort();
+
+  const toggleCategory = (c) => {
+    setSelectedCategories((prev) =>
+      prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
+    );
+  };
 
   // Fallback stock lookup from /products so Available still works
   // even if the report API (old deployed server) doesn't return stock_quantity yet.
@@ -610,7 +633,7 @@ function ProductReport({ start, end, onDatesChange }) {
     setData(null);
     setError(null);
     const params = new URLSearchParams({ start, end, granularity });
-    if (category) params.set('category', category);
+    if (selectedCategories.length > 0) params.set('categories', selectedCategories.join(','));
     apiFetch(`/reports/product-sales?${params}`).then(async (r) => {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed to load');
@@ -622,11 +645,11 @@ function ProductReport({ start, end, onDatesChange }) {
     });
   };
 
-  useEffect(() => { load(); }, [start, end, granularity, category]);
+  useEffect(() => { load(); }, [start, end, granularity, selectedCategories.join(',')]);
 
   useEffect(() => {
     const params = new URLSearchParams({ weeks: forecastWeeks, buffer_pct: bufferPct });
-    if (category) params.set('category', category);
+    if (selectedCategories.length > 0) params.set('categories', selectedCategories.join(','));
     apiFetch(`/reports/forecast?${params}`).then(async (r) => {
       const d = await r.json();
       if (!r.ok) return;
@@ -634,12 +657,15 @@ function ProductReport({ start, end, onDatesChange }) {
       setForecastMap(Object.fromEntries((d.items || []).map((it) => [Number(it.id), it])));
       setForecastList(d.items || []);
     }).catch(() => {});
-  }, [forecastWeeks, bufferPct, category]);
+  }, [forecastWeeks, bufferPct, selectedCategories.join(',')]);
 
+  const categorySlug = selectedCategories.length > 0
+    ? selectedCategories.map((c) => String(c).toLowerCase().replace(/[^a-z0-9]+/g, '-')).join('-').slice(0, 60)
+    : 'all';
   const handleExport = () => {
     if (!data || !data.trend) return;
     const rows = [['Period', 'Qty Sold', 'Revenue', 'Transactions'], ...data.trend.map((t) => [t.period, t.qty_sold, t.revenue.toFixed(2), t.transactions])];
-    downloadCsv(`product-${category || 'all'}-${granularity}-${start}-to-${end}.csv`, rows);
+    downloadCsv(`product-${categorySlug}-${granularity}-${start}-to-${end}.csv`, rows);
   };
 
   const handleExportProducts = (productsToExport) => {
@@ -651,7 +677,7 @@ function ProductReport({ start, end, onDatesChange }) {
         return [p.name, p.category || '', p.qty_sold, Number(p.revenue).toFixed(2), getAvailable(p), f?.weekly_avg ?? '', f?.forecast_qty ?? '', f?.buy_label ?? ''];
       }),
     ];
-    downloadCsv(`products-${category || 'all'}-${start}-to-${end}.csv`, rows);
+    downloadCsv(`products-${categorySlug}-${start}-to-${end}.csv`, rows);
   };
   const getForecast = (p) => forecastMap[Number(p.id)];
   // All-products list: forecast endpoint returns EVERY product (LEFT JOIN),
@@ -679,14 +705,61 @@ function ProductReport({ start, end, onDatesChange }) {
       <div className="bg-surface border border-outline-variant rounded-xl p-4">
         <h2 className="font-semibold text-on-surface mb-3">Product Sales — Day / Week / Month</h2>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-          <div>
-            <label className="text-xs text-on-surface-variant">Category</label>
-            <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
-              <option value="">All categories</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+          <div className="relative">
+            <label className="text-xs text-on-surface-variant">Categories — only selected are exported to PDF</label>
+            <button
+              type="button"
+              onClick={() => setCatOpen((v) => !v)}
+              className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 text-sm text-left flex justify-between items-center bg-surface"
+            >
+              <span className="truncate">
+                {selectedCategories.length === 0
+                  ? 'All categories'
+                  : `${selectedCategories.length} selected: ${selectedCategories.join(', ')}`}
+              </span>
+              <span className="text-on-surface-variant ml-2">{catOpen ? '▲' : '▼'}</span>
+            </button>
+            {catOpen && (
+              <div className="absolute z-20 mt-1 w-full bg-surface border border-outline-variant rounded-lg shadow-lg max-h-64 overflow-y-auto p-2">
+                <div className="flex justify-between items-center px-1 pb-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategories(categories)}
+                    className="text-primary text-xs font-medium"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategories([])}
+                    className="text-on-surface-variant text-xs font-medium"
+                  >
+                    Clear
+                  </button>
+                </div>
+                {categories.length === 0 && (
+                  <p className="text-xs text-on-surface-variant px-1 py-2">No categories found.</p>
+                )}
+                {categories.map((c) => (
+                  <label key={c} className="flex items-center gap-2 px-1 py-1.5 text-sm cursor-pointer hover:bg-surface-container-low rounded">
+                    <input
+                      type="checkbox"
+                      checked={selectedCategories.includes(c)}
+                      onChange={() => toggleCategory(c)}
+                      className="accent-blue-600"
+                    />
+                    <span className="text-on-surface truncate">{c}</span>
+                  </label>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setCatOpen(false)}
+                  className="w-full mt-1 bg-primary text-white text-sm font-medium rounded-lg px-3 py-1.5"
+                >
+                  Done ({selectedCategories.length === 0 ? 'All' : selectedCategories.length})
+                </button>
+              </div>
+            )}
           </div>
           <div>
             <label className="text-xs text-on-surface-variant">Granularity</label>
@@ -702,8 +775,8 @@ function ProductReport({ start, end, onDatesChange }) {
             </button>
           </div>
         </div>
-        {category && (
-          <p className="text-xs text-on-surface-variant mt-2">Showing: <span className="font-medium text-on-surface">{category}</span> — {granularity} breakdown for {start} to {end} — also filtered in All Products below</p>
+        {selectedCategories.length > 0 && (
+          <p className="text-xs text-on-surface-variant mt-2">Showing: <span className="font-medium text-on-surface">{selectedCategories.join(', ')}</span> — {granularity} breakdown for {start} to {end} — only these categories will be exported to PDF below</p>
         )}
       </div>
 
@@ -755,7 +828,7 @@ function ProductReport({ start, end, onDatesChange }) {
           {data.top_products && (
             <div className="bg-surface border border-outline-variant rounded-xl p-4">
               <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
-                <h3 className="font-semibold text-on-surface">{category ? `Products in ${category} — ${getAllProducts().length} products` : `All Products — ${getAllProducts().length} products`}</h3>
+                <h3 className="font-semibold text-on-surface">{selectedCategories.length > 0 ? `Products in ${selectedCategories.join(', ')} — ${getAllProducts().length} products` : `All Products — ${getAllProducts().length} products`}</h3>
                 <div className="flex items-center gap-3">
                   <button onClick={() => setShowAll(!showAll)} className="text-primary text-sm font-medium">
                     {showAll ? 'Show Top 10' : `Show All (${getAllProducts().length})`}
@@ -815,7 +888,7 @@ function ProductReport({ start, end, onDatesChange }) {
                         </tbody>
                       </table>
                     </div>
-                    <div className="flex flex-wrap gap-2 mt-3">
+                    <div className="flex flex-wrap items-center gap-2 mt-3">
                       <button
                         onClick={() => handleExportProducts(filtered)}
                         className="text-primary text-sm font-medium flex items-center gap-1"
@@ -823,12 +896,21 @@ function ProductReport({ start, end, onDatesChange }) {
                         <Download size={14} /> Export products CSV
                       </button>
                       <button
-                        onClick={() => exportForecastPdf(filtered, forecastMeta, start, end, category)}
+                        onClick={() => {
+                          const onlySelected = selectedCategories.length > 0
+                            ? filtered.filter((p) => selectedCategories.includes(p.category))
+                            : filtered;
+                          exportForecastPdf(onlySelected, forecastMeta, start, end, selectedCategories);
+                        }}
                         className="text-primary text-sm font-medium flex items-center gap-1"
+                        title={selectedCategories.length > 0 ? `PDF will include only: ${selectedCategories.join(', ')}` : 'PDF will include all categories'}
                       >
-                        <Download size={14} /> Export forecast PDF
+                        <Download size={14} /> Export forecast PDF{selectedCategories.length > 0 ? ` (${selectedCategories.length} cat.)` : ''}
                       </button>
                     </div>
+                    {selectedCategories.length > 0 && (
+                      <p className="text-xs text-on-surface-variant mt-1">PDF export is limited to: {selectedCategories.join(', ')}</p>
+                    )}
                   </>
                 );
               })()}

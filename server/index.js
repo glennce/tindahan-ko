@@ -1616,7 +1616,13 @@ app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res
 });
 
 app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (req, res) => {
-  const { product_id, category, start, end, granularity = 'day' } = req.query;
+  const { product_id, category, categories, start, end, granularity = 'day' } = req.query;
+  // Support single `category`, comma-separated `categories`, or repeated ?category=a&category=b
+  const categoryList = [
+    ...(Array.isArray(category) ? category : category ? [category] : []),
+    ...(Array.isArray(categories) ? categories : typeof categories === 'string' && categories ? categories.split(',') : []),
+  ].map((c) => String(c).trim()).filter(Boolean);
+  const uniqueCategories = [...new Set(categoryList)];
   if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
   const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
   const validGran = ['day','week','month'];
@@ -1638,10 +1644,10 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
       productFilter = `AND si.product_id = $${params.length + 1}`;
       params.push(product_id);
     }
-    if (category) {
-      categoryFilter = `AND p.category = $${params.length + 1}`;
+    if (uniqueCategories.length > 0) {
+      categoryFilter = `AND p.category = ANY($${params.length + 1})`;
       categoryJoin = `JOIN products p ON p.id = si.product_id`;
-      params.push(category);
+      params.push(uniqueCategories);
       // need p join for category filter even if product_id not set, ensure join exists
       if (!product_id) {
         // already have join for category, no extra
@@ -1650,8 +1656,8 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
       // need join for product filter? si already has product_id, no need
     }
     // For trend, need to handle category filter which requires join
-    const trendJoin = category ? `JOIN products p ON p.id = si.product_id` : '';
-    const trendCategoryFilter = category ? `AND p.category = $${params.length}` : '';
+    const trendJoin = uniqueCategories.length > 0 ? `JOIN products p ON p.id = si.product_id` : '';
+    const trendCategoryFilter = uniqueCategories.length > 0 ? `AND p.category = ANY($${params.length})` : '';
     // Actually params already includes category if present, so use same
     const trend = await pool.query(`
       SELECT ${groupExpr} AS period,
@@ -1679,9 +1685,9 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
     if (!product_id) {
       const topParams = [rangeStart, rangeEnd];
       let topCategoryFilter = '';
-      if (category) {
-        topCategoryFilter = `AND p.category = $3`;
-        topParams.push(category);
+      if (uniqueCategories.length > 0) {
+        topCategoryFilter = `AND p.category = ANY($3)`;
+        topParams.push(uniqueCategories);
       }
       topProducts = await pool.query(`
         SELECT p.id, p.name, p.category, p.stock_quantity, p.units_per_pack, p.unit_label, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
@@ -1722,7 +1728,11 @@ app.get('/api/reports/forecast', requireAuth, requireRole('owner'), async (req, 
   if (!Number.isFinite(bufferPct)) bufferPct = 10;
   bufferPct = Math.min(Math.max(bufferPct, 0), 100);
   const buffer = bufferPct / 100;
-  const { category } = req.query;
+  const categoryListRaw = [
+    ...(Array.isArray(req.query.category) ? req.query.category : req.query.category ? [req.query.category] : []),
+    ...(Array.isArray(req.query.categories) ? req.query.categories : typeof req.query.categories === 'string' && req.query.categories ? req.query.categories.split(',') : []),
+  ].map((c) => String(c).trim()).filter(Boolean);
+  const uniqueCategories = [...new Set(categoryListRaw)];
   try {
     const end = manilaToday();
     const start = addDaysToManilaDate(end, -(weeks * 7 - 1));
@@ -1730,9 +1740,9 @@ app.get('/api/reports/forecast', requireAuth, requireRole('owner'), async (req, 
 
     const params = [rangeStart, rangeEnd];
     let categoryFilter = '';
-    if (category) {
-      categoryFilter = `AND p.category = $3`;
-      params.push(category);
+    if (uniqueCategories.length > 0) {
+      categoryFilter = `AND p.category = ANY($3)`;
+      params.push(uniqueCategories);
     }
     const rows = await pool.query(
       `SELECT p.id, p.name, p.category, p.stock_quantity,
