@@ -1770,11 +1770,15 @@ app.get('/api/reports/forecast', requireAuth, requireRole('owner'), async (req, 
         0
       );
       const packs = perPack > 0 ? Math.ceil((needed - 1e-9) / perPack) : needed;
+      // Whole packs only: you can't buy loose pcs from the supplier,
+      // so always round UP. Label shows what you actually order
+      // (e.g. need 15 pcs, pack = 10 → "2 packs (20 pcs)").
+      const totalPcs = perPack > 0 ? packs * perPack : needed;
       const buyLabel =
         needed <= 0
           ? '—'
           : perPack > 0
-            ? `${packs} pack${packs === 1 ? '' : 's'} (${needed} pcs)`
+            ? `${packs} pack${packs === 1 ? '' : 's'} (${totalPcs} pcs)`
             : `${needed} pcs`;
       return {
         id: r.id,
@@ -1789,6 +1793,8 @@ app.get('/api/reports/forecast', requireAuth, requireRole('owner'), async (req, 
         forecast_qty: Math.round(forecast * 100) / 100,
         suggested_qty: needed,
         suggested_packs: perPack > 0 ? packs : null,
+        suggested_total_pcs: perPack > 0 ? packs * perPack : needed,
+        pack_size: perPack || null,
         buy_label: buyLabel,
       };
     });

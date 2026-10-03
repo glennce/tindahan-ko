@@ -50,14 +50,17 @@ function suggestOrder(p, days, soldMap) {
   const needed = Math.max(Math.ceil(weekly - stock - 1e-9), Math.ceil(threshold - stock - 1e-9), 0);
   const perPack = Number(p.units_per_pack) || 0;
   const packs = perPack > 0 ? Math.ceil((needed - 1e-9) / perPack) : needed;
+  // Whole packs only — round UP to full packs. Label shows actual order
+  // (e.g. need 15 pcs, pack = 10 → "2 packs (20 pcs)").
+  const totalPcs = perPack > 0 ? packs * perPack : needed;
   const soldLabel = `${sold} sold`;
   const buyLabel =
     needed <= 0
       ? '—'
       : perPack > 0
-        ? `${packs} pack${packs === 1 ? '' : 's'} (${needed} pcs)`
+        ? `${packs} pack${packs === 1 ? '' : 's'} (${totalPcs} pcs)`
         : `${needed} pcs`;
-  return { soldLabel, buyLabel };
+  return { soldLabel, buyLabel, needed, packs, perPack, totalPcs };
 }
 
 /* Export all-products forecast (To Buy next 7d) as a PDF, grouped by category.
@@ -880,7 +883,7 @@ function ProductReport({ start, end, onDatesChange }) {
                               <td className="px-4 py-2 font-medium text-on-surface">{p.qty_sold} sold</td>
                               <td className="px-4 py-2 text-on-surface-variant">₱{Number(p.revenue).toFixed(2)}</td>
                               <td className="px-4 py-2 text-on-surface-variant">{formatStock(getFullProduct(p))}</td>
-                              <td className="px-4 py-2 font-medium text-on-surface" title={getForecast(p) ? `Avg ${getForecast(p).weekly_avg}/wk over ${forecastMeta?.weeks ?? forecastWeeks}w, forecast ${getForecast(p).forecast_qty} pcs` : 'No forecast yet'}>
+                              <td className="px-4 py-2 font-medium text-on-surface" title={getForecast(p) ? `Avg ${getForecast(p).weekly_avg}/wk over ${forecastMeta?.weeks ?? forecastWeeks}w, forecast ${getForecast(p).forecast_qty} pcs, stock ${getAvailable(p)} → need ${getForecast(p).suggested_qty ?? '?'} pcs · pack = ${getForecast(p).units_per_pack ?? getForecast(p).pack_size ?? '?'} pcs (whole packs, rounded up)` : 'No forecast yet'}>
                                 {getForecast(p)?.buy_label ?? '—'}
                               </td>
                             </tr>
