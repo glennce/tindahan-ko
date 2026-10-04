@@ -55,6 +55,7 @@ function Inventory() {
   const [stockinCategory, setStockinCategory] = useState('All');
   const [stockinSaving, setStockinSaving] = useState(false);
   const [stockinPayMethod, setStockinPayMethod] = useState('cash');
+  const [stockinPreviewOpen, setStockinPreviewOpen] = useState(false);
   const [restockLogs, setRestockLogs] = useState([]);
   const [restockSearch, setRestockSearch] = useState('');
   const [restockPage, setRestockPage] = useState(1);
@@ -250,6 +251,31 @@ function Inventory() {
     return sum + pieces * effective;
   }, 0);
 
+  // Full preview list: every filled-in row across all pages/search, not just this page
+  const stockinPreviewItems = Object.entries(stockinRows)
+    .map(([id, row]) => {
+      const p = products.find((x) => String(x.id) === String(id));
+      if (!p || !row) return null;
+      const pieces = stockinPiecesFor(p, row);
+      if (!(pieces > 0)) return null;
+      const typedCost = stockinCostPerPieceFor(p, row);
+      const effectiveCost = typedCost != null && typedCost !== -1 ? typedCost : Number(p.cost_price || 0);
+      return {
+        id: String(id),
+        product: p,
+        packs: Number(row.packs) || 0,
+        loose: Number(String(row.loose).replace(/[^0-9]/g, '')) || 0,
+        pieces,
+        oldQty: Number(p.stock_quantity),
+        newQty: Number(p.stock_quantity) + pieces,
+        costPerPiece: effectiveCost,
+        costChanged: typedCost != null && typedCost !== -1,
+        lineCost: pieces * effectiveCost,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.product.name.localeCompare(b.product.name));
+
   const handleBulkStockIn = async () => {
     const byId = Object.fromEntries(products.map((p) => [String(p.id), p]));
     const items = [];
@@ -288,11 +314,20 @@ function Inventory() {
           ? `Stocked in ${savedIds.size} product${savedIds.size === 1 ? '' : 's'} — ₱${deducted.toFixed(2)} deducted from ${stockinPayMethod === 'gcash' ? 'GCash' : 'Cash Drawer'}`
           : `Stocked in ${savedIds.size} product${savedIds.size === 1 ? '' : 's'}`
       );
+      setStockinPreviewOpen(false);
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
       setStockinSaving(false);
     }
+  };
+
+  const removePreviewItem = (id) => {
+    setStockinRows((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const handleRepack = async (data) => {
@@ -652,11 +687,110 @@ function Inventory() {
               </div>
             </div>
             <button
-              onClick={handleBulkStockIn} disabled={stockinSaving || stockinPendingCount === 0}
+              onClick={() => setStockinPreviewOpen(true)} disabled={stockinSaving || stockinPendingCount === 0}
               className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg disabled:opacity-50 mt-1"
             >
-              {stockinSaving ? 'Saving...' : stockinPendingCount > 0 ? `Confirm Stock In (${stockinPendingCount}) — ₱${stockinTotalCost.toFixed(2)}` : 'Confirm Stock In'}
+              {stockinPendingCount > 0 ? `Review Stock In (${stockinPendingCount}) — ₱${stockinTotalCost.toFixed(2)}` : 'Review Stock In'}
             </button>
+
+            {stockinPreviewOpen && (
+              <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => !stockinSaving && setStockinPreviewOpen(false)}>
+                <div
+                  className="bg-surface rounded-xl w-full max-w-lg shadow-lg overflow-hidden flex flex-col max-h-[90vh]"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex justify-between items-center px-4 py-3 border-b border-outline-variant">
+                    <div>
+                      <h2 className="font-semibold text-on-surface">Review Stock In ({stockinPreviewItems.length})</h2>
+                      <p className="text-xs text-on-surface-variant">Check that all products are here before confirming.</p>
+                    </div>
+                    <button onClick={() => setStockinPreviewOpen(false)} disabled={stockinSaving} className="text-on-surface-variant text-xl px-2">
+                      {'\u2715'}
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4">
+                    {stockinPreviewItems.length === 0 ? (
+                      <p className="text-sm text-on-surface-variant text-center py-6">Nothing to preview — entries were removed or invalid.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {stockinPreviewItems.map((it) => (
+                          <div key={it.id} className="border border-outline-variant rounded-lg px-3 py-2">
+                            <div className="flex justify-between items-start gap-2">
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-on-surface truncate">{it.product.name}</p>
+                                <p className="text-xs text-on-surface-variant">
+                                  {it.product.units_per_pack
+                                    ? `${it.packs} pack${it.packs === 1 ? '' : 's'}${it.loose > 0 ? ` + ${it.loose} loose` : ''} = +${it.pieces} ${it.product.unit_label || 'pcs'}`
+                                    : `+${it.pieces} pcs`}
+                                  {' · '}Stock: {it.oldQty} → <span className="font-medium text-secondary">{it.newQty}</span>
+                                </p>
+                                <p className="text-xs text-on-surface-variant">
+                                  ₱{Number(it.costPerPiece).toFixed(2)}/{it.product.units_per_pack ? (it.product.unit_label || 'pc') : 'pc'}
+                                  {it.costChanged ? ' (new cost)' : ' (current cost)'}
+                                  {' · '}Line: <span className="font-medium text-on-surface">₱{it.lineCost.toFixed(2)}</span>
+                                </p>
+                              </div>
+                              <button
+                                onClick={() => removePreviewItem(it.id)}
+                                disabled={stockinSaving}
+                                className="text-error text-xs font-medium px-2 py-1 rounded hover:bg-error-container/30 disabled:opacity-40 shrink-0"
+                                title="Remove from this restock"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="bg-surface-container-low rounded-xl p-3 mt-3">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-on-surface-variant">Total products</span>
+                        <span className="font-bold text-on-surface">{stockinPreviewItems.length}</span>
+                      </div>
+                      <div className="flex justify-between text-sm mt-1">
+                        <span className="text-on-surface-variant">Total pieces added</span>
+                        <span className="font-bold text-secondary">+{stockinPreviewItems.reduce((s, it) => s + it.pieces, 0)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm mt-1">
+                        <span className="text-on-surface-variant">Drawer deduction</span>
+                        <span className="font-bold text-error">₱{stockinTotalCost.toFixed(2)}</span>
+                      </div>
+                      <div className="flex gap-2 items-center mt-2">
+                        <span className="text-xs text-on-surface-variant">Deduct from:</span>
+                        {['cash', 'gcash'].map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => setStockinPayMethod(m)}
+                            disabled={stockinSaving}
+                            className={`px-3 py-1.5 rounded-lg text-sm font-medium capitalize border ${stockinPayMethod === m ? 'bg-primary text-on-primary border-primary' : 'bg-surface text-on-surface-variant border-outline-variant'}`}
+                          >
+                            {m === 'cash' ? 'Cash' : 'GCash'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-4 border-t border-outline-variant flex gap-2">
+                    <button
+                      onClick={() => setStockinPreviewOpen(false)}
+                      disabled={stockinSaving}
+                      className="flex-1 border border-outline-variant text-on-surface font-medium py-2.5 rounded-lg text-sm"
+                    >
+                      Back to Edit
+                    </button>
+                    <button
+                      onClick={handleBulkStockIn}
+                      disabled={stockinSaving || stockinPreviewItems.length === 0}
+                      className="flex-1 bg-primary text-on-primary font-medium py-2.5 rounded-lg text-sm disabled:opacity-50"
+                    >
+                      {stockinSaving ? 'Saving...' : `Confirm Stock In (${stockinPreviewItems.length})`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
