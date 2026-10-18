@@ -251,7 +251,7 @@ export default function Shift() {
   if (!data) return <p className="text-on-surface-variant">Loading...</p>;
 
   const { shift, running, pending, closed } = data;
-  const profit = data.profit || { today_gross: 0, taken_today_cash: 0, taken_today_gcash: 0, taken_today_total: 0, available_today: 0 };
+  const profit = data.profit || { today_gross: 0, taken_today_cash: 0, taken_today_gcash: 0, taken_today_total: 0, total_gross: 0, taken_total: 0, available_total: 0 };
   const withdrawals = data.withdrawals || [];
   const takenToday = withdrawals.filter((w) => {
     try {
@@ -401,24 +401,24 @@ export default function Shift() {
               <p className="text-xs text-on-surface-variant mb-4">Takes cash out of the drawer WITHOUT recording an expense — Net Profit stays correct. Use Expenses only for real store costs.</p>
               <div className="grid grid-cols-3 gap-3 mb-4 text-center">
                 <div className="bg-surface-container-low rounded-lg p-3">
-                  <p className="text-xs text-on-surface-variant">Today's Gross Profit</p>
-                  <p className="text-lg font-bold text-secondary">₱{Number(profit.today_gross ?? 0).toFixed(2)}</p>
+                  <p className="text-xs text-on-surface-variant">Total Gross Profit</p>
+                  <p className="text-lg font-bold text-secondary">₱{Number(profit.total_gross ?? 0).toFixed(2)}</p>
                 </div>
                 <div className="bg-surface-container-low rounded-lg p-3">
-                  <p className="text-xs text-on-surface-variant">Taken Today</p>
-                  <p className="text-lg font-bold text-on-surface">₱{Number(profit.taken_today_total ?? 0).toFixed(2)}</p>
+                  <p className="text-xs text-on-surface-variant">Taken Home (all)</p>
+                  <p className="text-lg font-bold text-on-surface">₱{Number(profit.taken_total ?? 0).toFixed(2)}</p>
                 </div>
                 <div className="bg-surface-container-low rounded-lg p-3">
                   <p className="text-xs text-on-surface-variant">Available to Take</p>
-                  <p className="text-lg font-bold text-primary">₱{Number(profit.available_today ?? 0).toFixed(2)}</p>
+                  <p className="text-lg font-bold text-primary">₱{Number(profit.available_total ?? 0).toFixed(2)}</p>
                 </div>
               </div>
               <form onSubmit={handleTakeProfit} className="space-y-3">
                 <div>
                   <label className="text-sm text-on-surface-variant">Amount</label>
                   <input type="number" step="0.01" value={withdrawForm.amount} onChange={(e) => setWithdrawForm((f) => ({ ...f, amount: e.target.value }))} placeholder="e.g. 500" className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1" />
-                  {withdrawForm.amount && Number(withdrawForm.amount) > Number(profit.available_today ?? 0) && (
-                    <p className="text-xs text-error mt-1">⚠ More than today's remaining profit (₱{Number(profit.available_today ?? 0).toFixed(2)}) — only continue if taking from an earlier day's profit.</p>
+                  {withdrawForm.amount && Number(withdrawForm.amount) > Number(profit.available_total ?? 0) && (
+                    <p className="text-xs text-error mt-1">⚠ More than available profit (₱{Number(profit.available_total ?? 0).toFixed(2)}) — taking home profit already withdrawn.</p>
                   )}
                 </div>
                 <div>

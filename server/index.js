@@ -2576,8 +2576,7 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       closedTotalGcash += Number(todayGcashTransIn.rows[0].total) - Number(todayGcashTransOut.rows[0].total);
     }
 
-    // Today's gross profit (all completed sales today, Manila time) — the
-    // basis for how much profit the owner can take home today.
+    // Today's gross profit (all completed sales today, Manila time).
     const { start: todayStart, end: todayEnd } = manilaDayBounds(today);
     const todayProfitRes = await pool.query(
       `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
@@ -2600,6 +2599,22 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
     );
     const takenTodayCash = Number(takenTodayCashRes.rows[0].total);
     const takenTodayGcash = Number(takenTodayGcashRes.rows[0].total);
+    // Available-basis is CUMULATIVE, not day-scoped: the owner takes profit
+    // home the next morning, so "today's profit - taken today" breaks when
+    // the take-home belongs to yesterday's profit (today's Available would
+    // be zeroed by a take-home recorded after last night's sales). Cumulative
+    // earned vs cumulative taken is timing-independent.
+    const totalGrossProfitRes = await pool.query(
+      `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+       JOIN products p ON p.id = si.product_id`
+    );
+    const totalGrossProfit = Number(totalGrossProfitRes.rows[0].gross_profit);
+    const totalTakenRes = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals`
+    );
+    const totalTaken = Number(totalTakenRes.rows[0].total);
     const recentWithdrawals = await pool.query(
       `SELECT w.*, u.name AS created_by_name FROM profit_withdrawals w
        LEFT JOIN users u ON u.id = w.created_by
@@ -2625,7 +2640,9 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       taken_today_cash: takenTodayCash,
       taken_today_gcash: takenTodayGcash,
       taken_today_total: takenTodayCash + takenTodayGcash,
-      available_today: Math.max(todayGrossProfit - takenTodayCash - takenTodayGcash, 0),
+      total_gross: totalGrossProfit,
+      taken_total: totalTaken,
+      available_total: Math.max(totalGrossProfit - totalTaken, 0),
     };
 
     res.json({ shift, running, pending: pending.rows, closed, profit, withdrawals: recentWithdrawals.rows });
