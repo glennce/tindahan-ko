@@ -2837,6 +2837,82 @@ app.get('/api/shift/history', requireAuth, async (req, res) => {
   }
 });
 
+// Unified Cash Drawer activity feed — counted days, expenses, money
+// transfers and profit take-homes in one paginated, type-filterable list.
+// Declared BEFORE /api/shift/:id so 'activity' is never treated as an id.
+app.get('/api/shift/activity', requireAuth, async (req, res) => {
+  try {
+    const validTypes = ['all', 'shift', 'expense', 'transfer', 'withdrawal'];
+    const type = validTypes.includes(req.query.type) ? req.query.type : 'all';
+    const exportAll = req.query.all === '1';
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const perPage = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+    const offset = exportAll ? 0 : (page - 1) * perPage;
+
+    const union = `(
+      SELECT
+        'shift' AS type,
+          cs.id AS ref_id,
+          COALESCE(cs.closed_at, cs.created_at) AS occurred_at,
+          cs.shift_date::date AS event_date,
+          'Cash counted' AS title,
+          'cash' AS wallet,
+          cs.closing_cash AS amount,
+          cs.difference AS extra,
+          cs.notes AS note,
+          u2.name AS created_by_name
+        FROM cash_shifts cs
+        LEFT JOIN users u2 ON u2.id = cs.closed_by
+        WHERE cs.status = 'closed'
+        UNION ALL
+        SELECT
+          'expense', e.id, e.created_at, NULL::date,
+          e.category, COALESCE(e.payment_method, 'cash'),
+          e.amount, NULL::numeric, e.description, NULL::text
+        FROM expenses e
+        UNION ALL
+        SELECT
+          'transfer', t.id, t.created_at, NULL::date,
+          (t.from_wallet || ' -> ' || t.to_wallet), t.from_wallet,
+          t.amount, NULL::numeric, t.note, u.name
+        FROM money_transfers t
+        LEFT JOIN users u ON u.id = t.created_by
+        UNION ALL
+        SELECT
+          'withdrawal', w.id, w.created_at, NULL::date,
+          'Profit taken home', COALESCE(w.source_wallet, 'cash'),
+          w.amount, NULL::numeric, w.note, u.name
+        FROM profit_withdrawals w
+        LEFT JOIN users u ON u.id = w.created_by
+      ) all_activity`;
+
+    const where = type === 'all' ? '' : ` WHERE all_activity.type = $1`;
+    const params = type === 'all' ? [] : [type];
+
+    const totalRes = await pool.query(`SELECT COUNT(*)::int AS n FROM ${union}${where}`, params);
+    const total = totalRes.rows[0].n;
+    const limitSql = exportAll
+      ? 'LIMIT ALL OFFSET 0'
+      : `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    const qParams = exportAll ? params : [...params, perPage, offset];
+    const rowsRes = await pool.query(
+      `SELECT * FROM ${union}${where} ORDER BY occurred_at DESC, ref_id DESC ${limitSql}`,
+      qParams
+    );
+
+    res.json({
+      rows: rowsRes.rows,
+      total,
+      page: exportAll ? 1 : page,
+      per_page: exportAll ? total : perPage,
+      pages: exportAll ? 1 : Math.max(1, Math.ceil(total / perPage)),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load drawer activity' });
+  }
+});
+
 app.get('/api/shift/:id', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(

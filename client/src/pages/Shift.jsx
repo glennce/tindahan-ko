@@ -53,6 +53,20 @@ const expenseIcon = {
   'Restock': '📦', 'Store Supplies': '🛍️', 'Utilities': '⚡', 'Rent': '🏠', 'Transportation': '🚗', 'Other': '📦',
 };
 
+const ACTIVITY_TYPES = [
+  { key: 'all', label: 'All' },
+  { key: 'shift', label: 'Cash Counts' },
+  { key: 'expense', label: 'Expenses' },
+  { key: 'transfer', label: 'Transfers' },
+  { key: 'withdrawal', label: 'Profit Taken' },
+];
+const ACTIVITY_STYLE = {
+  shift: { label: 'Cash Count', className: 'bg-primary-container text-on-primary' },
+  expense: { label: 'Expense', className: 'bg-error-container text-error' },
+  transfer: { label: 'Transfer', className: 'bg-secondary-container text-secondary' },
+  withdrawal: { label: 'Profit Taken', className: 'bg-tertiary-container text-tertiary' },
+};
+
 export default function Shift() {
   const [activeTab, setActiveTab] = useState('drawer');
   const [data, setData] = useState(null);
@@ -92,11 +106,57 @@ export default function Shift() {
     apiFetch('/transfers').then((res) => res.json()).then(setTransfers).catch(() => {});
   };
 
+  const [activityType, setActivityType] = useState('all');
+  const [activityPage, setActivityPage] = useState(1);
+  const [activityData, setActivityData] = useState(null);
+  const loadActivity = (pageNum, type) => {
+    const t = type ?? activityType;
+    const pg = pageNum ?? activityPage;
+    apiFetch(`/shift/activity?type=${t}&page=${pg}&limit=25`)
+      .then((res) => res.json())
+      .then(setActivityData)
+      .catch(() => {});
+  };
+  const changeActivityType = (t) => {
+    setActivityType(t);
+    setActivityPage(1);
+    loadActivity(1, t);
+  };
+  const changeActivityPage = (p) => {
+    setActivityPage(p);
+    loadActivity(p, undefined);
+  };
+
+  const handleExportActivity = async () => {
+    try {
+      const res = await apiFetch(`/shift/activity?type=${activityType}&all=1`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      const rows = [['Date/Time', 'Type', 'Details', 'Wallet', 'Amount', 'By'],
+        ...json.rows.map((r) => {
+          const amt = Number(r.amount ?? 0);
+          const signed = r.type === 'expense' || r.type === 'withdrawal' ? -amt : amt;
+          return [
+            new Date(r.occurred_at).toLocaleString(),
+            ACTIVITY_STYLE[r.type]?.label || r.type,
+            r.type === 'shift' ? `Cash counted (diff ₱${Number(r.extra ?? 0).toFixed(2)})${r.note ? ` · ${r.note}` : ''}` : `${r.title}${r.note ? ` · ${r.note}` : ''}`,
+            r.wallet || '',
+            signed.toFixed(2),
+            r.created_by_name || '',
+          ];
+        })];
+      downloadCsv(`cash-drawer-history-${new Date().toISOString().slice(0, 10)}.csv`, rows);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
   useEffect(() => {
     loadCurrent();
     loadHistory();
     loadReport();
     loadTransfers();
+    loadActivity();
     const interval = setInterval(loadCurrent, 30000);
     return () => clearInterval(interval);
   }, []);
@@ -119,6 +179,7 @@ export default function Shift() {
       setExpenseForm({ category: 'Store Supplies', amount: '', description: '', payment_method: 'cash' });
       loadCurrent();
       loadReport();
+      loadActivity();
       showToast(`Expense recorded — deducted from ${expenseForm.payment_method === 'gcash' ? 'GCash' : 'Cash'}`);
     } catch (err) {
       showToast(err.message, 'error');
@@ -145,6 +206,7 @@ export default function Shift() {
       setTransferForm({ from_wallet: 'cash', to_wallet: 'gcash', amount: '', note: '' });
       loadCurrent();
       loadTransfers();
+      loadActivity();
       showToast(`Transferred ₱${transferForm.amount} from ${transferForm.from_wallet} to ${transferForm.to_wallet}`);
     } catch (err) {
       showToast(err.message, 'error');
@@ -166,6 +228,7 @@ export default function Shift() {
       if (!res.ok) throw new Error(result.error);
       setWithdrawForm({ amount: '', source_wallet: 'cash', note: '' });
       loadCurrent();
+      loadActivity();
       showToast(`Profit taken ₱${Number(withdrawForm.amount).toFixed(2)} — drawer deducted, net profit untouched`);
     } catch (err) {
       showToast(err.message, 'error');
@@ -190,6 +253,7 @@ export default function Shift() {
       loadCurrent();
       loadHistory();
       loadReport();
+      loadActivity();
       showToast('Shift closed');
     } catch (err) {
       showToast(err.message, 'error');
@@ -210,6 +274,7 @@ export default function Shift() {
       if (!res.ok) throw new Error(result.error);
       loadCurrent();
       loadReport();
+      loadActivity();
       showToast('Moved to Profit Taken — net profit fixed');
     } catch (err) {
       showToast(err.message, 'error');
@@ -224,6 +289,7 @@ export default function Shift() {
       if (!res.ok) throw new Error(result.error);
       loadCurrent();
       loadReport();
+      loadActivity();
       showToast('Expense deleted');
     } catch (err) {
       showToast(err.message, 'error');
@@ -242,6 +308,7 @@ export default function Shift() {
       if (!res.ok) throw new Error(result.error);
       loadCurrent();
       loadHistory();
+      loadActivity();
       showToast('Cash Drawer reset — counting from zero starting today');
     } catch (err) {
       showToast(err.message, 'error');
@@ -252,12 +319,6 @@ export default function Shift() {
 
   const { shift, running, pending, closed } = data;
   const profit = data.profit || { today_gross: 0, taken_today_cash: 0, taken_today_gcash: 0, taken_today_total: 0, total_gross: 0, taken_total: 0, available_total: 0 };
-  const withdrawals = data.withdrawals || [];
-  const takenToday = withdrawals.filter((w) => {
-    try {
-      return new Date(w.created_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' }) === new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
-    } catch { return false; }
-  });
   const expectedForClose = closingShift?.status === 'pending_count'
     ? Number(closingShift.expected_cash)
     : running.expected_cash;
@@ -435,22 +496,6 @@ export default function Shift() {
                 </div>
                 <button type="submit" className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg">Take Profit Home</button>
               </form>
-              {takenToday.length > 0 && (
-                <div className="mt-4 pt-3 border-t border-outline-variant">
-                  <h3 className="font-medium text-on-surface text-sm mb-2">Taken Today</h3>
-                  <div className="space-y-2">
-                    {takenToday.map((w) => (
-                      <div key={w.id} className="flex justify-between items-center text-sm">
-                        <div>
-                          <p className="text-on-surface capitalize">{w.source_wallet || 'cash'} <span className="text-on-surface-variant text-xs">· {new Date(w.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{w.created_by_name ? ` · ${w.created_by_name}` : ''}</span></p>
-                          <p className="text-on-surface-variant text-xs">{w.note || '—'}</p>
-                        </div>
-                        <span className="font-medium text-on-surface">₱{Number(w.amount).toFixed(2)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
             </div>
           )}
@@ -632,12 +677,15 @@ export default function Shift() {
 
           {activeTab === 'history' && (
             <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden">
-              <div className="p-4 border-b border-outline-variant flex justify-between items-center">
+              <div className="p-4 border-b border-outline-variant flex flex-col lg:flex-row lg:justify-between gap-3">
                 <div>
-                  <h2 className="font-semibold text-on-surface">Shift History</h2>
-                  <p className="text-xs text-on-surface-variant">Includes debt from credit (utang charged) & GCash received per day.</p>
+                  <h2 className="font-semibold text-on-surface">History</h2>
+                  <p className="text-xs text-on-surface-variant">Everything in the Cash Drawer — counted days, expenses, money transfers, profit take-homes.</p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2 items-center">
+                  <select value={activityType} onChange={(e) => changeActivityType(e.target.value)} className="border border-outline-variant rounded-lg px-2 py-1.5 text-sm">
+                    {ACTIVITY_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                  </select>
                   {user?.role === 'owner' && (
                     <button
                       onClick={() => setShowResetConfirm(true)}
@@ -646,55 +694,81 @@ export default function Shift() {
                       Reset to Zero
                     </button>
                   )}
-                  <button
-                    onClick={() => {
-                    const rows = [['Date', 'Cash Counted', 'Difference', 'Debt from Credit (Utang)', 'GCash Sales', 'GCash Utang Payments', 'GCash Received', 'Cash Expenses', 'GCash Expenses', 'Profit Taken Home'],
-                      ...history.map((s) => {
-                        const gcashSales = Number(s.gcash_sales ?? 0);
-                        const gcashPay = Number(s.gcash_utang_payments ?? 0);
-                        const taken = Number(s.profit_taken ?? ((Number(s.cash_withdrawals ?? 0)) + (Number(s.gcash_withdrawals ?? 0))));
-                        return [new Date(s.shift_date).toLocaleDateString(), s.closing_cash, s.difference, Number(s.utang_charged ?? 0).toFixed(2), gcashSales.toFixed(2), gcashPay.toFixed(2), (gcashSales + gcashPay).toFixed(2), Number(s.cash_expenses ?? 0).toFixed(2), Number(s.gcash_expenses ?? 0).toFixed(2), taken.toFixed(2)];
-                      })];
-                    downloadCsv(`shift-history-${new Date().toISOString().slice(0, 10)}.csv`, rows);
-                  }}
-                  className="border border-outline-variant text-primary text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1"
-                >
-                  <Download size={16} /> Export CSV
-                </button>
+                  <button onClick={handleExportActivity} className="border border-outline-variant text-primary text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1">
+                    <Download size={16} /> Export CSV
+                  </button>
                 </div>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm min-w-[900px]">
+                <table className="w-full text-left text-sm min-w-[800px]">
                   <thead className="bg-surface-container-low text-on-surface-variant">
-                    <tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Cash Counted</th><th className="px-4 py-3">Diff</th><th className="px-4 py-3">Debt (Utang)</th><th className="px-4 py-3">GCash Received</th><th className="px-4 py-3 text-right">Details</th></tr>
+                    <tr><th className="px-4 py-3">Date &amp; Time</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Details</th><th className="px-4 py-3">Wallet</th><th className="px-4 py-3 text-right">Amount</th><th className="px-4 py-3">By</th><th className="px-4 py-3 text-right">Details View</th></tr>
                   </thead>
                   <tbody>
-                    {history.map((s) => {
-                      const gcashReceived = Number(s.gcash_received ?? (Number(s.gcash_sales ?? 0) + Number(s.gcash_utang_payments ?? 0)));
+                    {(activityData?.rows || []).map((r) => {
+                      const style = ACTIVITY_STYLE[r.type] || { label: r.type, className: 'bg-surface-container-low text-on-surface-variant' };
+                      const amt = Number(r.amount ?? 0);
                       return (
-                      <tr key={s.id} className="border-t border-outline-variant">
-                        <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">{new Date(s.shift_date).toLocaleDateString()}
-                          <span className="block text-xs">Cash exp ₱{Number(s.cash_expenses ?? 0).toFixed(2)} · GCash exp ₱{Number(s.gcash_expenses ?? 0).toFixed(2)}</span>
-                          {Number(s.profit_taken ?? ((Number(s.cash_withdrawals ?? 0)) + (Number(s.gcash_withdrawals ?? 0)))) > 0 && (
-                            <span className="block text-xs">Profit taken ₱{Number(s.profit_taken ?? ((Number(s.cash_withdrawals ?? 0)) + (Number(s.gcash_withdrawals ?? 0)))).toFixed(2)}</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-on-surface">₱{Number(s.closing_cash).toFixed(2)}</td>
-                        <td className={`px-4 py-3 font-medium ${Number(s.difference) === 0 ? 'text-secondary' : 'text-error'}`}>₱{Number(s.difference).toFixed(2)}</td>
-                        <td className="px-4 py-3 text-error font-medium">₱{Number(s.utang_charged ?? 0).toFixed(2)}
-                          <span className="block text-xs font-normal text-on-surface-variant">credit given</span>
-                        </td>
-                        <td className="px-4 py-3 text-secondary font-medium">₱{gcashReceived.toFixed(2)}
-                          <span className="block text-xs font-normal text-on-surface-variant">sales ₱{Number(s.gcash_sales ?? 0).toFixed(2)} + payments ₱{Number(s.gcash_utang_payments ?? 0).toFixed(2)}</span>
-                        </td>
-                        <td className="px-4 py-3 text-right"><button onClick={() => viewShiftDetail(s.id)} className="p-1.5 text-primary hover:bg-primary-container hover:text-on-primary rounded-md"><Eye size={18} /></button></td>
-                      </tr>
+                        <tr key={`${r.type}-${r.ref_id}`} className="border-t border-outline-variant">
+                          <td className="px-4 py-3 text-on-surface-variant whitespace-nowrap">
+                            {r.type === 'shift'
+                              ? new Date(r.event_date).toLocaleDateString()
+                              : new Date(r.occurred_at).toLocaleString()}
+                          </td>
+                          <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${style.className}`}>{style.label}</span></td>
+                          <td className="px-4 py-3">
+                            <p className="text-on-surface">{r.type === 'shift' ? `Cash counted — ${r.event_date ? new Date(r.event_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''}` : r.title}</p>
+                            {(r.type === 'shift' ? `Diff ₱${Number(r.extra ?? 0).toFixed(2)}${r.note ? ` · ${r.note}` : ''}` : (r.note || '')) && (
+                              <p className="text-on-surface-variant text-xs">{r.type === 'shift' ? `Diff ₱${Number(r.extra ?? 0).toFixed(2)}${r.note ? ` · ${r.note}` : ''}` : (r.note || '—')}</p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 capitalize text-on-surface-variant">{r.wallet || '—'}</td>
+                          <td className="px-4 py-3 text-right font-medium whitespace-nowrap">
+                            {r.type === 'shift'
+                              ? <span className="text-on-surface">₱{amt.toFixed(2)}</span>
+                              : r.type === 'expense' || r.type === 'withdrawal'
+                                ? <span className="text-error">-₱{amt.toFixed(2)}</span>
+                                : <span className="text-secondary">₱{amt.toFixed(2)}</span>}
+                          </td>
+                          <td className="px-4 py-3 text-on-surface-variant">{r.created_by_name || '—'}</td>
+                          <td className="px-4 py-3 text-right">
+                            {r.type === 'shift' && (
+                              <button onClick={() => viewShiftDetail(r.ref_id)} className="p-1.5 text-primary hover:bg-primary-container hover:text-on-primary rounded-md"><Eye size={18} /></button>
+                            )}
+                          </td>
+                        </tr>
                       );
                     })}
-                    {history.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-on-surface-variant">No shifts closed yet.</td></tr>}
+                    {activityData && activityData.rows.length === 0 && (
+                      <tr><td colSpan={7} className="px-4 py-6 text-center text-on-surface-variant">No history entries{activityType !== 'all' ? ' for this type' : ''}.</td></tr>
+                    )}
+                    {!activityData && (
+                      <tr><td colSpan={7} className="px-4 py-6 text-center text-on-surface-variant">Loading...</td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
+              {activityData && activityData.pages > 0 && (
+                <div className="p-3 border-t border-outline-variant flex flex-wrap justify-between items-center gap-2">
+                  <p className="text-xs text-on-surface-variant">Page {activityData.page} of {activityData.pages} · {activityData.total} records</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => changeActivityPage(activityPage - 1)}
+                      disabled={activityPage <= 1}
+                      className="border border-outline-variant text-on-surface text-sm font-medium px-3 py-1.5 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      onClick={() => changeActivityPage(activityPage + 1)}
+                      disabled={activityPage >= (activityData.pages || 1)}
+                      className="border border-outline-variant text-on-surface text-sm font-medium px-3 py-1.5 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
