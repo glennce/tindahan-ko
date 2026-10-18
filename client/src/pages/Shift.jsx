@@ -70,7 +70,6 @@ const ACTIVITY_STYLE = {
 export default function Shift() {
   const [activeTab, setActiveTab] = useState('drawer');
   const [data, setData] = useState(null);
-  const [history, setHistory] = useState([]);
   const [closingShift, setClosingShift] = useState(null);
   const [closingCash, setClosingCash] = useState('');
   const [notes, setNotes] = useState('');
@@ -79,7 +78,6 @@ export default function Shift() {
   const [reportStart, setReportStart] = useState(firstOfMonth());
   const [reportEnd, setReportEnd] = useState(today());
   const [reportData, setReportData] = useState(undefined);
-  const [transfers, setTransfers] = useState([]);
   const [transferForm, setTransferForm] = useState({ from_wallet: 'cash', to_wallet: 'gcash', amount: '', note: '' });
   const [withdrawForm, setWithdrawForm] = useState({ amount: '', source_wallet: 'cash', note: '' });
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -88,9 +86,6 @@ export default function Shift() {
 
   const loadCurrent = () => {
     apiFetch('/shift/current').then((res) => res.json()).then(setData);
-  };
-  const loadHistory = () => {
-    apiFetch('/shift/history').then((res) => res.json()).then(setHistory);
   };
   const loadReport = () => {
     apiFetch(`/reports/expenses?start=${reportStart}&end=${reportEnd}`)
@@ -101,9 +96,6 @@ export default function Shift() {
         else setReportData(null);
       })
       .catch(() => setReportData(null));
-  };
-  const loadTransfers = () => {
-    apiFetch('/transfers').then((res) => res.json()).then(setTransfers).catch(() => {});
   };
 
   const [activityType, setActivityType] = useState('all');
@@ -153,9 +145,7 @@ export default function Shift() {
 
   useEffect(() => {
     loadCurrent();
-    loadHistory();
     loadReport();
-    loadTransfers();
     loadActivity();
     const interval = setInterval(loadCurrent, 30000);
     return () => clearInterval(interval);
@@ -205,7 +195,6 @@ export default function Shift() {
       if (!res.ok) throw new Error(result.error);
       setTransferForm({ from_wallet: 'cash', to_wallet: 'gcash', amount: '', note: '' });
       loadCurrent();
-      loadTransfers();
       loadActivity();
       showToast(`Transferred ₱${transferForm.amount} from ${transferForm.from_wallet} to ${transferForm.to_wallet}`);
     } catch (err) {
@@ -251,7 +240,6 @@ export default function Shift() {
       setClosingCash('');
       setNotes('');
       loadCurrent();
-      loadHistory();
       loadReport();
       loadActivity();
       showToast('Shift closed');
@@ -307,7 +295,6 @@ export default function Shift() {
       const result = await res.json();
       if (!res.ok) throw new Error(result.error);
       loadCurrent();
-      loadHistory();
       loadActivity();
       showToast('Cash Drawer reset — counting from zero starting today');
     } catch (err) {
@@ -535,22 +522,6 @@ export default function Shift() {
                   </div>
                   <button type="submit" className="w-full bg-primary text-on-primary font-semibold py-3 rounded-lg">Transfer</button>
                 </form>
-              </div>
-              <div className="bg-surface border border-outline-variant rounded-xl p-4">
-                <h3 className="font-semibold text-on-surface mb-3">Recent Transfers — Monitoring</h3>
-                {transfers.length === 0 ? <p className="text-on-surface-variant text-sm">No transfers yet.</p> : (
-                  <div className="space-y-2 max-h-64 overflow-y-auto">
-                    {transfers.map((t) => (
-                      <div key={t.id} className="flex justify-between items-center text-sm border-b border-outline-variant pb-2">
-                        <div>
-                          <p className="text-on-surface capitalize">{t.from_wallet} → {t.to_wallet} <span className="text-on-surface-variant text-xs">· {new Date(t.created_at).toLocaleString()}</span></p>
-                          <p className="text-on-surface-variant text-xs">{t.note || '—'}</p>
-                        </div>
-                        <span className="font-medium text-on-surface">₱{Number(t.amount).toFixed(2)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
           )}
