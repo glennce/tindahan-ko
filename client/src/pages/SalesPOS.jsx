@@ -241,7 +241,7 @@ function SalesPOS() {
     <>
     <div className="lg:flex lg:gap-6 h-full">
       {/* Product grid */}
-      <div className="flex-1 pb-24 lg:pb-0">
+      <div className="flex-1 min-w-0 pb-24 lg:pb-0">
         <h1 className="text-2xl font-bold text-on-surface mb-4">Sales / POS</h1>
         <input
           type="text"
