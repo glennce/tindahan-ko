@@ -26,6 +26,7 @@ function SalesPOS() {
   const [discount, setDiscount] = useState('');
   const { showToast } = useToast();
   const [completedSale, setCompletedSale] = useState(null);
+  const [suggestions, setSuggestions] = useState(null);
   const [page, setPage] = useState(1);
   const PER_PAGE = 12;
 
@@ -85,6 +86,17 @@ function SalesPOS() {
         },
       ];
     });
+    loadSuggestions(product);
+  };
+
+  // Association-rule mining: ask the server which products were most often
+  // bought together with this one (support/confidence/lift from the last 90
+  // days). Purely advisory — nothing is added unless you tap a suggestion.
+  const loadSuggestions = (product) => {
+    apiFetch(`${PRODUCTS_API}/${product.id}/associations`)
+      .then((res) => res.json())
+      .then((d) => setSuggestions(Array.isArray(d) && d.length > 0 ? { anchor: product.name, items: d } : null))
+      .catch(() => setSuggestions(null));
   };
 
   const changeQty = (product_id, delta) => {
@@ -125,7 +137,16 @@ function SalesPOS() {
     setCustomerId('');
     setDiscount('');
     setError(null);
+    setSuggestions(null);
   };
+
+  // Suggestions already in cart or out of stock are hidden; an in-cart
+  // suggestion disappears once added, keeping the strip clean.
+  const suggestionItems = suggestions
+    ? suggestions.items.filter(
+        (s) => Number(s.stock_quantity) > 0 && !cart.some((i) => i.product_id === s.product_id)
+      )
+    : [];
 
   const handleCompleteSale = async () => {
     if (cart.length === 0) {
@@ -330,6 +351,30 @@ function SalesPOS() {
         <div className="flex-1 overflow-y-auto space-y-3">
           {cart.length === 0 && (
             <p className="text-on-surface-variant text-sm">No items yet.</p>
+          )}
+          {suggestions && suggestionItems.length > 0 && (
+            <div className="border border-outline-variant rounded-lg p-2 bg-surface-container-low">
+              <div className="flex justify-between items-center gap-2 mb-1">
+                <p className="text-[10px] text-on-surface-variant uppercase tracking-wide font-medium truncate">
+                  Often bought with {suggestions.anchor}
+                </p>
+                <button onClick={() => setSuggestions(null)} className="text-on-surface-variant text-xs px-1 shrink-0" title="Dismiss">
+                  ✕
+                </button>
+              </div>
+              <div className="flex flex-col gap-1">
+                {suggestionItems.map((s) => (
+                  <button
+                    key={s.product_id}
+                    onClick={() => addToCart(s)}
+                    className="flex justify-between items-center gap-2 bg-surface border border-outline-variant rounded-md px-2 py-1.5 hover:border-primary text-left"
+                  >
+                    <span className="text-on-surface text-xs font-medium truncate">+ {s.name}</span>
+                    <span className="text-on-surface-variant text-xs shrink-0">₱{Number(s.selling_price).toFixed(2)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
           {cart.map((item) => (
             <div key={item.product_id} className="border-b border-outline-variant pb-2">

@@ -196,6 +196,10 @@ async function ensureDB() {
     // Snapshot the cost at sale time so later restocks (which update
     // products.cost_price) can't rewrite historical profit.
     await pool.query(`ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS cost_price NUMERIC DEFAULT 0`);
+    // Speed up basket co-occurrence (association rules) and date-bounded reports.
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items (sale_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sale_items_product_id ON sale_items (product_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales (created_at)`);
     await pool.query(`
       UPDATE sale_items si SET cost_price = p.cost_price
       FROM products p WHERE p.id = si.product_id AND (si.cost_price IS NULL OR si.cost_price = 0)
@@ -343,6 +347,84 @@ app.get('/api/products', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch products' });
+  }
+});
+
+// Association-rule (market-basket) suggestions: products most likely to be
+// bought together with this one, mined from the last 90 days of completed
+// sales. Returns support, confidence and lift per candidate so the UI can
+// rank them; same math as Apriori's 2-item rules, done in one SQL pass.
+app.get('/api/products/:id/associations', requireAuth, async (req, res) => {
+  if (!/^\d+$/.test(req.params.id)) {
+    return res.status(400).json({ error: 'Invalid product id' });
+  }
+  try {
+    const result = await pool.query(
+      `
+      WITH base AS (
+        SELECT id FROM sales
+        WHERE status = 'completed'
+          AND created_at >= NOW() - ($2::int * INTERVAL '1 day')
+      ),
+      occ_a AS (
+        SELECT COUNT(DISTINCT si.sale_id) AS n
+        FROM sale_items si
+        WHERE si.product_id = $1 AND si.sale_id IN (SELECT id FROM base)
+      ),
+      pairs AS (
+        SELECT b.product_id, COUNT(DISTINCT b.sale_id) AS co
+        FROM sale_items a
+        JOIN sale_items b ON b.sale_id = a.sale_id
+          AND b.product_id IS NOT NULL
+          AND b.product_id <> a.product_id
+        WHERE a.product_id = $1
+          AND a.sale_id IN (SELECT id FROM base)
+        GROUP BY b.product_id
+        HAVING COUNT(DISTINCT b.sale_id) >= 2
+      ),
+      occ_b AS (
+        SELECT b2.product_id, COUNT(DISTINCT b2.sale_id) AS n
+        FROM sale_items b2
+        WHERE b2.product_id IN (SELECT product_id FROM pairs)
+          AND b2.sale_id IN (SELECT id FROM base)
+        GROUP BY b2.product_id
+      ),
+      meta AS (
+        SELECT (SELECT n FROM occ_a) AS occ_a, (SELECT COUNT(*) FROM base) AS baskets
+      )
+      SELECT p.id AS product_id, p.name, p.selling_price, p.stock_quantity,
+             pairs.co, occ_b.n AS occ_b, meta.occ_a, meta.baskets
+      FROM pairs
+      JOIN occ_b ON occ_b.product_id = pairs.product_id
+      JOIN products p ON p.id = pairs.product_id
+      CROSS JOIN meta
+      ORDER BY (pairs.co::numeric / GREATEST(meta.occ_a, 1)) DESC, pairs.co DESC
+      LIMIT 5
+      `,
+      [Number(req.params.id), 90]
+    );
+    res.json(result.rows.map((r) => {
+      const co = Number(r.co);
+      const occA = Number(r.occ_a);
+      const occB = Number(r.occ_b);
+      const baskets = Number(r.baskets);
+      const confidence = occA > 0 ? co / occA : 0;
+      const support = baskets > 0 ? co / baskets : 0;
+      const lift = confidence > 0 && occB > 0 ? confidence / (occB / baskets) : 0;
+      return {
+        product_id: r.product_id,
+        name: r.name,
+        selling_price: Number(r.selling_price),
+        stock_quantity: Number(r.stock_quantity),
+        bought_together: co,
+        support: Number(support.toFixed(4)),
+        confidence: Number(confidence.toFixed(4)),
+        lift: Number(lift.toFixed(2)),
+      };
+    }));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load product associations' });
   }
 });
 
