@@ -3,21 +3,10 @@ import { apiFetch } from '../api';
 import PaymentModal from '../components/PaymentModal';
 import CustomerModal from '../components/CustomerModal';
 import { useToast } from '../context/ToastContext';
+import { downloadCsv } from '../utils';
 import { Eye, Download } from 'lucide-react';
 
 const UTANG_API = '/utang';
-
-function downloadCsv(filename, rows) {
-  // \ufeff BOM first so Excel opens UTF-8 correctly
-  const csv = '﻿' + rows.map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 function initials(name) {
   return name.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase();

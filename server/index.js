@@ -1393,7 +1393,7 @@ app.post('/api/expenses', requireAuth, async (req, res) => {
 });
 
 // Reports: everything scoped to a date range via query params ?start=YYYY-MM-DD&end=YYYY-MM-DD
-app.get('/api/reports', async (req, res) => {
+app.get('/api/reports', requireAuth, requireRole('owner'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) {
     return res.status(400).json({ error: 'start and end query params are required' });
@@ -1713,6 +1713,92 @@ app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load utang report' });
+  }
+});
+
+app.get('/api/reports/losses', requireAuth, requireRole('owner'), async (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+  const { prevStart, prevEnd } = previousPeriod(start, end);
+  const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
+  const { start: prevRangeStart, end: prevRangeEnd } = manilaRangeBounds(prevStart, prevEnd);
+
+  try {
+    const totals = await pool.query(
+      `SELECT
+        COUNT(*) AS total_counts,
+        COUNT(*) FILTER (WHERE difference < 0) AS shortage_counts,
+        COUNT(*) FILTER (WHERE difference > 0) AS overage_counts,
+        COALESCE(SUM(difference) FILTER (WHERE difference < 0), 0) AS units_lost,
+        COALESCE(SUM(cost_impact) FILTER (WHERE difference < 0), 0) AS lost_value,
+        COALESCE(SUM(difference) FILTER (WHERE difference > 0), 0) AS overage_units,
+        COALESCE(SUM(cost_impact) FILTER (WHERE difference > 0), 0) AS overage_value
+       FROM stock_adjustments
+       WHERE created_at >= $1 AND created_at < $2`,
+      [rangeStart, rangeEnd]
+    );
+    const prevTotal = await pool.query(
+      `SELECT COALESCE(SUM(cost_impact) FILTER (WHERE difference < 0), 0) AS lost_value
+       FROM stock_adjustments
+       WHERE created_at >= $1 AND created_at < $2`,
+      [prevRangeStart, prevRangeEnd]
+    );
+    const byReason = await pool.query(
+      `SELECT reason, COUNT(*) AS adjustments,
+              COALESCE(SUM(difference), 0) AS units,
+              COALESCE(SUM(cost_impact), 0) AS value
+       FROM stock_adjustments
+       WHERE created_at >= $1 AND created_at < $2
+       GROUP BY reason ORDER BY value ASC`,
+      [rangeStart, rangeEnd]
+    );
+    const topItems = await pool.query(
+      `SELECT product_id, product_name,
+              COALESCE(SUM(difference), 0) AS units_lost,
+              COALESCE(SUM(cost_impact), 0) AS value
+       FROM stock_adjustments
+       WHERE created_at >= $1 AND created_at < $2 AND difference < 0
+       GROUP BY product_id, product_name
+       ORDER BY value ASC LIMIT 10`,
+      [rangeStart, rangeEnd]
+    );
+    const recent = await pool.query(
+      `SELECT sa.id, sa.product_id, sa.product_name, sa.system_qty, sa.counted_qty,
+              sa.difference, sa.reason, sa.notes, sa.cost_impact, sa.created_at,
+              u.name AS created_by_name
+       FROM stock_adjustments sa
+       LEFT JOIN users u ON u.id = sa.created_by
+       WHERE sa.created_at >= $1 AND sa.created_at < $2
+       ORDER BY sa.created_at DESC LIMIT 50`,
+      [rangeStart, rangeEnd]
+    );
+
+    const row = totals.rows[0];
+    res.json({
+      total_counts: Number(row.total_counts),
+      shortage_counts: Number(row.shortage_counts),
+      overage_counts: Number(row.overage_counts),
+      units_lost: -Number(row.units_lost),
+      lost_value: -Number(row.lost_value),
+      prev_lost_value: -Number(prevTotal.rows[0].lost_value),
+      overage_units: Number(row.overage_units),
+      overage_value: Number(row.overage_value),
+      by_reason: byReason.rows,
+      top_items: topItems.rows.map((r) => ({
+        product_id: r.product_id,
+        product_name: r.product_name,
+        units_lost: -Number(r.units_lost),
+        value: -Number(r.value),
+      })),
+      recent: recent.rows.map((r) => ({
+        ...r,
+        date: dbDateToManila(r.created_at),
+        created_at: undefined,
+      })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load losses report' });
   }
 });
 

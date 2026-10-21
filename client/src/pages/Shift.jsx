@@ -3,6 +3,8 @@ import { apiFetch } from '../api';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import ConfirmModal from '../components/ConfirmModal';
+import StatCard from '../components/StatCard';
+import { pctChange, downloadCsv, firstOfMonth, today } from '../utils';
 import { Eye, Wallet, Smartphone, Receipt, Download, ArrowLeftRight, History, Trash2 } from 'lucide-react';
 
 const TABS = [
@@ -12,43 +14,6 @@ const TABS = [
   { key: 'history', label: 'History', icon: History },
 ];
 
-function firstOfMonth() {
-  const d = new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
-}
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-function pctChange(current, previous) {
-  if (previous === 0) return current > 0 ? 100 : 0;
-  return ((current - previous) / previous) * 100;
-}
-function downloadCsv(filename, rows) {
-  const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-function StatCard({ label, value, change, icon: Icon }) {
-  return (
-    <div className="bg-surface border border-outline-variant rounded-xl p-4">
-      <div className="flex justify-between items-start">
-        <p className="text-on-surface-variant text-sm">{label}</p>
-        {Icon && <div className="bg-primary-container/20 text-primary p-1.5 rounded-md"><Icon size={16} /></div>}
-      </div>
-      <p className="text-2xl font-bold text-on-surface mt-2">{value}</p>
-      {change !== undefined && (
-        <p className={`text-xs mt-1 ${change >= 0 ? 'text-secondary' : 'text-error'}`}>
-          {change >= 0 ? '↑' : '↓'} {Math.abs(change).toFixed(1)}% vs previous period
-        </p>
-      )}
-    </div>
-  );
-}
 const expenseIcon = {
   'Restock': '📦', 'Store Supplies': '🛍️', 'Utilities': '⚡', 'Rent': '🏠', 'Transportation': '🚗', 'Other': '📦',
 };

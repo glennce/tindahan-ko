@@ -1,39 +1,17 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
-import { TrendingUp, Activity, Package, CreditCard, Receipt, Download } from 'lucide-react';
-import { formatStock } from '../utils';
+import { TrendingUp, Activity, Package, CreditCard, Receipt, Download, AlertTriangle } from 'lucide-react';
+import { formatStock, pctChange, downloadCsv, today, firstOfMonth, manilaIsoDate } from '../utils';
+import StatCard from '../components/StatCard';
 
 const TABS = [
   { key: 'sales', label: 'Sales', icon: TrendingUp },
   { key: 'profit', label: 'Profit', icon: Activity },
+  { key: 'losses', label: 'Losses', icon: AlertTriangle },
   { key: 'inventory', label: 'Inventory', icon: Package },
   { key: 'product', label: 'Products', icon: Package },
   { key: 'utang', label: 'Utang', icon: CreditCard },
 ];
-
-function firstOfMonth() {
-  const d = new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
-}
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function pctChange(current, previous) {
-  if (previous === 0) return current > 0 ? 100 : 0;
-  return ((current - previous) / previous) * 100;
-}
-
-function downloadCsv(filename, rows) {
-  const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 /* Export combined low-stock + out-of-stock items as a PDF, grouped by category */
 /* Restock suggestion: 1-week cover. The Sold column shows the exact Products
@@ -263,11 +241,55 @@ async function exportRestockPdf(data, start, end) {
   doc.save(`restock-by-category-${dateStr}.pdf`);
 }
 
+const LOSS_REASONS = {
+  unrecorded_sale: 'Unrecorded Sale',
+  theft: 'Theft',
+  damaged: 'Damaged',
+  expired: 'Expired',
+  miscount_correction: 'Miscount Correction',
+  supplier_shortage: 'Supplier Shortage',
+  return_correction: 'Return Correction',
+  other: 'Other',
+};
+
+const DATE_PRESETS = [
+  { key: 'today', label: 'Today' },
+  { key: 'yesterday', label: 'Yesterday' },
+  { key: 'last7', label: 'Last 7 Days' },
+  { key: 'last30', label: 'Last 30 Days' },
+  { key: 'thisMonth', label: 'This Month' },
+  { key: 'lastMonth', label: 'Last Month' },
+];
+
 function Reports() {
   const [activeTab, setActiveTab] = useState('sales');
   const [start, setStart] = useState(firstOfMonth());
   const [end, setEnd] = useState(today());
+  const [activePreset, setActivePreset] = useState('thisMonth');
   const [data, setData] = useState(null);
+
+  const applyPreset = (key) => {
+    const t = new Date();
+    const iso = manilaIsoDate;
+    if (key === 'today') {
+      const d = iso(t);
+      setStart(d); setEnd(d);
+    } else if (key === 'yesterday') {
+      const d = new Date(t); d.setDate(t.getDate() - 1);
+      const s = iso(d);
+      setStart(s); setEnd(s);
+    } else if (key === 'last7' || key === 'last30') {
+      const n = key === 'last7' ? 6 : 29;
+      const s = new Date(t); s.setDate(t.getDate() - n);
+      setStart(iso(s)); setEnd(iso(t));
+    } else if (key === 'thisMonth') {
+      setStart(firstOfMonth()); setEnd(iso(t));
+    } else if (key === 'lastMonth') {
+      setStart(iso(new Date(t.getFullYear(), t.getMonth() - 1, 1)));
+      setEnd(iso(new Date(t.getFullYear(), t.getMonth(), 0)));
+    }
+    setActivePreset(key);
+  };
 
   const loadReport = () => {
     if (activeTab === 'product') return;
@@ -297,6 +319,12 @@ function Reports() {
       rows = [['Product', 'Qty Sold'], ...data.top_movers.map((p) => [p.name, p.qty_sold])];
     } else if (activeTab === 'utang') {
       rows = [['Customer', 'Balance'], ...data.top_debtors.map((c) => [c.name, c.balance])];
+    } else if (activeTab === 'losses') {
+      rows = [
+        ['Loss Reason', 'Adjustments', 'Units (signed)', 'Cost Impact (PHP)'],
+        ...data.by_reason.map((r) => [LOSS_REASONS[r.reason] || r.reason, r.adjustments, r.units, Number(r.value).toFixed(2)]),
+        ['TOTAL LOSS', data.total_counts, '', Number(data.lost_value).toFixed(2)],
+      ];
     }
     downloadCsv(`${activeTab}-report-${start}-to-${end}.csv`, rows);
   };
@@ -309,10 +337,25 @@ function Reports() {
           <p className="text-on-surface-variant">{start} to {end}</p>
         </div>
         <div className="flex flex-wrap gap-2 items-center">
-          <input type="date" value={start} onChange={(e) => setStart(e.target.value)}
+          <div className="flex flex-wrap gap-1">
+            {DATE_PRESETS.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => applyPreset(p.key)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
+                  activePreset === p.key
+                    ? 'bg-primary text-white border-primary'
+                    : 'border-outline-variant text-on-surface-variant hover:bg-surface-container-low'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <input type="date" value={start} onChange={(e) => { setStart(e.target.value); setActivePreset(null); }}
             className="border border-outline-variant rounded-lg px-2 py-1 text-sm" />
           <span className="text-on-surface-variant">to</span>
-          <input type="date" value={end} onChange={(e) => setEnd(e.target.value)}
+          <input type="date" value={end} onChange={(e) => { setEnd(e.target.value); setActivePreset(null); }}
             className="border border-outline-variant rounded-lg px-2 py-1 text-sm" />
           <button
             onClick={handleExportCsv}
@@ -351,29 +394,13 @@ function Reports() {
             <>
               {activeTab === 'sales' && <SalesReport data={data} />}
               {activeTab === 'profit' && <ProfitReport data={data} />}
+              {activeTab === 'losses' && <ShrinkageReport data={data} />}
               {activeTab === 'inventory' && <InventoryReport data={data} start={start} end={end} />}
               {activeTab === 'utang' && <UtangReport data={data} />}
             </>
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function StatCard({ label, value, change, icon: Icon }) {
-  return (
-    <div className="bg-surface border border-outline-variant rounded-xl p-4">
-      <div className="flex justify-between items-start">
-        <p className="text-on-surface-variant text-sm">{label}</p>
-        {Icon && <div className="bg-primary-container/20 text-primary p-1.5 rounded-md"><Icon size={16} /></div>}
-      </div>
-      <p className="text-2xl font-bold text-on-surface mt-2">{value}</p>
-      {change !== undefined && (
-        <p className={`text-xs mt-1 ${change >= 0 ? 'text-secondary' : 'text-error'}`}>
-          {change >= 0 ? '↑' : '↓'} {Math.abs(change).toFixed(1)}% vs previous period
-        </p>
-      )}
     </div>
   );
 }
@@ -458,6 +485,103 @@ function ProfitReport({ data }) {
           <p className="text-on-surface-variant text-sm">No data in this range.</p>
         ) : (
           <BarChart items={data.trend} valueKey="profit" labelFormatter={(t) => t.day} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ShrinkageReport({ data }) {
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Loss Value" value={`₱${Number(data.lost_value).toFixed(2)}`}
+          change={pctChange(data.lost_value, data.prev_lost_value)} icon={AlertTriangle} goodDown />
+        <StatCard label="Units Lost" value={data.units_lost} icon={Package} />
+        <StatCard label="Audit Counts" value={`${data.total_counts} (${data.shortage_counts} short · ${data.overage_counts} over)`} icon={Activity} />
+        <StatCard label="Overage Value" value={`₱${Number(data.overage_value).toFixed(2)}`} icon={Package} />
+      </div>
+      <p className="text-xs text-on-surface-variant">Cost impact from physical count variances (stock audits). Lower is better — investigate theft and unrecorded sales.</p>
+
+      <div className="bg-surface border border-outline-variant rounded-xl p-4">
+        <h2 className="font-semibold text-on-surface mb-3">Losses by Reason</h2>
+        {data.by_reason.length === 0 ? (
+          <p className="text-on-surface-variant text-sm">No stock audits in this range.</p>
+        ) : (
+          <table className="w-full text-left text-sm">
+            <thead className="bg-surface-container-low text-on-surface-variant">
+              <tr>
+                <th className="px-4 py-2">Reason</th>
+                <th className="px-4 py-2">Adjustments</th>
+                <th className="px-4 py-2">Units</th>
+                <th className="px-4 py-2">Cost Impact</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.by_reason.map((r) => (
+                <tr key={r.reason} className="border-t border-outline-variant">
+                  <td className="px-4 py-2 text-on-surface">{LOSS_REASONS[r.reason] || r.reason}</td>
+                  <td className="px-4 py-2 text-on-surface-variant">{r.adjustments}</td>
+                  <td className="px-4 py-2 text-on-surface-variant">{Number(r.units) > 0 ? `+${Number(r.units)}` : Number(r.units)}</td>
+                  <td className={`px-4 py-2 font-medium ${Number(r.value) < 0 ? 'text-error' : 'text-secondary'}`}>
+                    ₱{Number(r.value).toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="bg-surface border border-outline-variant rounded-xl p-4">
+        <h2 className="font-semibold text-on-surface mb-3">Most Affected Products</h2>
+        {data.top_items.length === 0 ? (
+          <p className="text-on-surface-variant text-sm">No losses recorded.</p>
+        ) : data.top_items.map((p) => (
+          <div key={p.product_id} className="flex justify-between text-sm py-2 border-t border-outline-variant">
+            <span className="text-on-surface">{p.product_name}</span>
+            <span className="text-error font-medium">
+              {Math.abs(p.units_lost)} pc{Math.abs(p.units_lost) === 1 ? '' : 's'} · ₱{Number(p.value).toFixed(2)}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-surface border border-outline-variant rounded-xl p-4">
+        <h2 className="font-semibold text-on-surface mb-3">Recent Audit Adjustments</h2>
+        {data.recent.length === 0 ? (
+          <p className="text-on-surface-variant text-sm">No adjustments in this range.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm min-w-[600px]">
+              <thead className="bg-surface-container-low text-on-surface-variant">
+                <tr>
+                  <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2">Product</th>
+                  <th className="px-4 py-2">Counted</th>
+                  <th className="px-4 py-2">Variance</th>
+                  <th className="px-4 py-2">Reason</th>
+                  <th className="px-4 py-2">Recorded By</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.recent.map((a) => (
+                  <tr key={a.id} className="border-t border-outline-variant">
+                    <td className="px-4 py-2 text-on-surface-variant">{a.date}</td>
+                    <td className="px-4 py-2 text-on-surface">{a.product_name}</td>
+                    <td className="px-4 py-2 text-on-surface-variant">
+                      {a.system_qty} → {a.counted_qty}
+                    </td>
+                    <td className={`px-4 py-2 font-medium ${a.difference < 0 ? 'text-error' : 'text-secondary'}`}>
+                      {a.difference > 0 ? `+${a.difference}` : a.difference}
+                    </td>
+                    <td className="px-4 py-2 text-on-surface-variant">{LOSS_REASONS[a.reason] || a.reason}</td>
+                    <td className="px-4 py-2 text-on-surface-variant">{a.created_by_name || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>
@@ -611,7 +735,7 @@ function ProductReport({ start, end, onDatesChange }) {
     setGranularity(newGran);
     // Auto-adjust top date range to match granularity — day=today, week=current week, month=current month
     const t = new Date();
-    const iso = (d) => d.toISOString().slice(0, 10);
+    const iso = manilaIsoDate;
     if (newGran === 'day') {
       const d = iso(t);
       onDatesChange(d, d);
