@@ -1,5 +1,5 @@
 import { apiFetch } from '../api';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import CustomerModal from '../components/CustomerModal';
 import { useToast } from '../context/ToastContext';
 import SaleSuccessModal from '../components/SaleSuccessModal';
@@ -20,6 +20,9 @@ function SalesPOS() {
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreBtnRef = useRef(null);
+  const [moreMenuPos, setMoreMenuPos] = useState({ left: 0, top: 0 });
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
@@ -39,6 +42,21 @@ function SalesPOS() {
   const quickCategories = categories.slice(0, QUICK_COUNT);
   const moreCategories = categories.slice(QUICK_COUNT);
   const activeInMore = moreCategories.includes(activeCategory);
+
+  // Custom popover instead of a native select — the native one renders an
+  // unstyled full-height list that overflows the app frame on mobile.
+  const toggleMoreMenu = () => {
+    if (moreMenuOpen) {
+      setMoreMenuOpen(false);
+      return;
+    }
+    const r = moreBtnRef.current.getBoundingClientRect();
+    setMoreMenuPos({
+      left: Math.max(8, Math.min(r.left, window.innerWidth - 240)),
+      top: r.bottom + 6,
+    });
+    setMoreMenuOpen(true);
+  };
 
   const filteredProducts = products
   .filter((p) => {
@@ -265,20 +283,17 @@ function SalesPOS() {
             </button>
           ))}
           {moreCategories.length > 0 && (
-            <select
-              value={activeInMore ? activeCategory : ''}
-              onChange={(e) => setActiveCategory(e.target.value)}
-              className={`px-3 py-1.5 rounded-full text-sm font-medium border-none cursor-pointer shrink-0 ${
+            <button
+              ref={moreBtnRef}
+              onClick={toggleMoreMenu}
+              className={`px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap shrink-0 ${
                 activeInMore
                   ? 'bg-primary text-on-primary'
                   : 'bg-surface-container-low text-on-surface-variant'
               }`}
             >
-              <option value="" disabled>{activeInMore ? activeCategory : 'More'}</option>
-              {moreCategories.map((cat) => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
+              {activeInMore ? `${activeCategory} ▾` : 'More ▾'}
+            </button>
           )}
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">
@@ -566,6 +581,30 @@ function SalesPOS() {
         </button>
       )}
     </div>
+
+    {moreMenuOpen && (
+      <>
+        <div className="fixed inset-0 z-[55]" onClick={() => setMoreMenuOpen(false)} />
+        <div
+          className="fixed z-[60] w-56 max-h-72 overflow-y-auto rounded-xl border border-outline-variant bg-surface shadow-lg py-1"
+          style={{ left: moreMenuPos.left, top: moreMenuPos.top }}
+        >
+          {moreCategories.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => { setActiveCategory(cat); setMoreMenuOpen(false); }}
+              className={`block w-full text-left px-3 py-2 text-sm ${
+                activeCategory === cat
+                  ? 'bg-primary-container text-on-primary font-medium'
+                  : 'text-on-surface hover:bg-surface-container-low'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+      </>
+    )}
     <CustomerModal
       isOpen={customerModalOpen}
       onClose={() => setCustomerModalOpen(false)}
