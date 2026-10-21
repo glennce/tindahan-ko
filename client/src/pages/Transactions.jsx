@@ -23,7 +23,7 @@ function Transactions() {
   const [type, setType] = useState('All');
   const [status, setStatus] = useState('All');
   const [page, setPage] = useState(1);
-  const limit = 10;
+  const limit = 25;
   const { showToast } = useToast();
   const [pendingVoidId, setPendingVoidId] = useState(null);
 
