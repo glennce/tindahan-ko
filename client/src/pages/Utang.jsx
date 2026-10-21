@@ -95,8 +95,11 @@ function Utang() {
   };
 
   const handleSavePayment = async (payload) => {
+    // 'store' pays down product charges; 'cash' repays a cash loan. They are
+    // separate endpoints because only store payments count in the Cash Drawer.
+    const isCashLoan = payload.target === 'cash';
     try {
-      const res = await apiFetch(`${UTANG_API}/payment`, {
+      const res = await apiFetch(isCashLoan ? `${UTANG_API}/cash-loan/payment` : `${UTANG_API}/payment`, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
@@ -105,7 +108,7 @@ function Utang() {
 
       setPaymentModalOpen(false);
       loadAll();
-      showToast('Payment recorded');
+      showToast(isCashLoan ? 'Cash-loan repayment recorded (monitoring only)' : 'Payment recorded');
       const updated = ledger.find((c) => c.customer_id === payload.customer_id);
       if (updated) selectCustomer({ ...updated, customer_id: payload.customer_id });
     } catch (err) {

@@ -814,7 +814,26 @@ app.get('/api/utang', requireAuth, async (req, res) => {
       LEFT JOIN utang_transactions ut ON ut.customer_id = c.id
       ORDER BY c.id, ut.created_at DESC, ut.id DESC
     `);
-    res.json(result.rows);
+    // Split each balance into store credit vs cash loan so the UI can show
+    // exactly what a customer's "owed" amount consists of.
+    const cash = await pool.query(`
+      SELECT customer_id,
+             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS loaned,
+             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS repaid
+      FROM utang_transactions
+      GROUP BY customer_id
+    `);
+    const cashByCustomer = new Map(
+      cash.rows.map((r) => [r.customer_id, Math.max(Number(r.loaned) - Number(r.repaid), 0)])
+    );
+    res.json(result.rows.map((c) => {
+      const cashLoanBalance = cashByCustomer.get(c.customer_id) || 0;
+      return {
+        ...c,
+        cash_loan_balance: cashLoanBalance,
+        store_balance: Math.max(Number(c.balance) - cashLoanBalance, 0),
+      };
+    }));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch utang ledger' });
