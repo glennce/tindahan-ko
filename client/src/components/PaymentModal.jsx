@@ -122,7 +122,7 @@ function PaymentModal({ isOpen, onClose, onSave, customers, preselectedCustomer 
                 if (loan > 0) parts.push(`Loan ₱${loan.toFixed(2)}`);
                 return (
                   <option key={c.customer_id} value={c.customer_id}>
-                    {c.name} — ₱{Number(c.balance).toFixed(2)} ({parts.join(' · ')})
+                    {c.name} — ₱{Number(c.balance).toFixed(2)}{parts.length > 0 ? ` (${parts.join(' · ')})` : ''}
                   </option>
                 );
               })}
@@ -155,8 +155,8 @@ function PaymentModal({ isOpen, onClose, onSave, customers, preselectedCustomer 
               onChange={(e) => { setTarget(e.target.value); setError(null); }}
               className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
             >
-              {storeOwed > 0 && <option value="store">Store Credit — utang sa tindahan (counts in Cash Drawer)</option>}
-              {cashLoan > 0 && <option value="cash">Cash Loan Repayment — monitoring only</option>}
+              {storeOwed > 0 && <option value="store">Store Credit — ₱{storeOwed.toFixed(2)}</option>}
+              {cashLoan > 0 && <option value="cash">Cash Loan — ₱{cashLoan.toFixed(2)}</option>}
             </select>
           </div>
 
