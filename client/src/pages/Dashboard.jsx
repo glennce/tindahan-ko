@@ -89,7 +89,7 @@ function Dashboard() {
               <Wallet size={18} />
             </div>
           </div>
-          <p className="text-2xl font-bold text-on-surface mt-2">₱{data.today_sales.toFixed(2)}</p>
+          <p className="text-xl sm:text-2xl tabular-nums break-all font-bold text-on-surface mt-2">₱{data.today_sales.toFixed(2)}</p>
         </div>
 
         <div className="bg-surface border border-outline-variant rounded-xl p-4">
@@ -99,7 +99,7 @@ function Dashboard() {
               <TrendingUp size={18} />
             </div>
           </div>
-          <p className="text-2xl font-bold text-on-surface mt-2">₱{data.gross_profit.toFixed(2)}</p>
+          <p className="text-xl sm:text-2xl tabular-nums break-all font-bold text-on-surface mt-2">₱{data.gross_profit.toFixed(2)}</p>
         </div>
 
         <div className="bg-surface border border-outline-variant rounded-xl p-4">
@@ -120,7 +120,7 @@ function Dashboard() {
               <CreditCard size={18} />
             </div>
           </div>
-          <p className="text-2xl font-bold text-error mt-2">₱{data.total_outstanding_utang.toFixed(2)}</p>
+          <p className="text-xl sm:text-2xl tabular-nums break-all font-bold text-error mt-2">₱{data.total_outstanding_utang.toFixed(2)}</p>
         </div>
       </div>
 
@@ -230,9 +230,9 @@ function Dashboard() {
               <div className="w-8 h-8 rounded-full bg-primary-container text-on-primary flex items-center justify-center font-bold text-xs shrink-0">
                 {initials(c.name)}
               </div>
-              <span className="flex-1 text-on-surface">{c.name}</span>
+              <span className="flex-1 text-on-surface truncate">{c.name}</span>
               <span className="text-on-surface-variant text-xs">{relativeDate(c.created_at)}</span>
-              <span className="text-error font-semibold w-20 text-right">₱{Number(c.balance_after).toFixed(2)}</span>
+              <span className="text-error font-semibold min-w-20 text-right whitespace-nowrap">₱{Number(c.balance_after).toFixed(2)}</span>
             </div>
           ))}
         </div>

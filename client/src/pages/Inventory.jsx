@@ -479,7 +479,7 @@ function Inventory() {
           <p className="text-on-surface-variant">Manage your product catalog and stock levels.</p>
         </div>
         {view === 'products' && (
-        <div className="mb-4">
+        <div className="w-full mb-4 lg:mb-0">
           <input
             type="text"
             placeholder="Search products, SKU, or categories..."
@@ -536,12 +536,12 @@ function Inventory() {
         </div>
       </div>
 
-      <div className="flex gap-1 mb-6">
+      <div className="flex gap-1 mb-6 overflow-x-auto">
         {[{ key: 'products', label: 'Products' }, { key: 'stockin', label: 'Stock In' }, { key: 'audit', label: 'Stock Audit' }, { key: 'history', label: 'History' }].map((t) => (
           <button
             key={t.key}
             onClick={() => setView(t.key)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium ${view === t.key ? 'bg-primary-container text-on-primary' : 'text-on-surface-variant hover:bg-surface-container-low'}`}
+            className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap ${view === t.key ? 'bg-primary-container text-on-primary' : 'text-on-surface-variant hover:bg-surface-container-low'}`}
           >
             {t.label}
           </button>
@@ -606,7 +606,7 @@ function Inventory() {
                               type="number" min="0" value={row.packs}
                               onChange={(e) => setStockinField(p.id, 'packs', e.target.value)}
                               placeholder="0"
-                              className="w-full border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
+                              className="w-full border border-outline-variant rounded-lg px-2 py-2 text-base sm:text-sm text-right"
                             />
                           </div>
                           <div>
@@ -615,7 +615,7 @@ function Inventory() {
                               type="text" inputMode="numeric" value={row.loose}
                               onChange={(e) => setStockinField(p.id, 'loose', e.target.value.replace(/[^0-9]/g, ''))}
                               placeholder="0"
-                              className="w-full border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
+                              className="w-full border border-outline-variant rounded-lg px-2 py-2 text-base sm:text-sm text-right"
                             />
                           </div>
                           <div>
@@ -624,7 +624,7 @@ function Inventory() {
                               type="number" min="0" step="0.01" value={row.costPack}
                               onChange={(e) => setStockinField(p.id, 'costPack', e.target.value)}
                               placeholder={p.units_per_pack ? `₱${(Number(p.cost_price) * p.units_per_pack).toFixed(2)}` : `₱${p.cost_price}`}
-                              className="w-full border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-right"
+                              className="w-full border border-outline-variant rounded-lg px-2 py-2 text-base sm:text-sm text-right"
                             />
                           </div>
                         </div>
@@ -835,7 +835,7 @@ function Inventory() {
                 </tbody>
               </table>
             </div>
-            <div className="flex justify-between items-center px-4 py-3 text-sm text-on-surface-variant border-t border-outline-variant">
+            <div className="flex flex-wrap justify-between items-center gap-2 px-4 py-3 text-sm text-on-surface-variant border-t border-outline-variant">
               <span>
                 Showing {filteredRestocks.length === 0 ? 0 : (restockPage - 1) * RESTOCK_PER_PAGE + 1}–{Math.min(restockPage * RESTOCK_PER_PAGE, filteredRestocks.length)} of {filteredRestocks.length}
               </span>
@@ -1106,7 +1106,7 @@ function Inventory() {
                 </tbody>
               </table>
             </div>
-            <div className="flex justify-between items-center px-4 py-3 text-sm text-on-surface-variant border-t border-outline-variant">
+            <div className="flex flex-wrap justify-between items-center gap-2 px-4 py-3 text-sm text-on-surface-variant border-t border-outline-variant">
               <span>
                 Showing {filteredAudits.length === 0 ? 0 : (auditPage - 1) * AUDIT_PER_PAGE + 1}–{Math.min(auditPage * AUDIT_PER_PAGE, filteredAudits.length)} of {filteredAudits.length}
               </span>
@@ -1198,7 +1198,7 @@ function Inventory() {
                 </tbody>
               </table>
             </div>
-            <div className="flex justify-between items-center px-4 py-3 text-sm text-on-surface-variant border-t border-outline-variant">
+            <div className="flex flex-wrap justify-between items-center gap-2 px-4 py-3 text-sm text-on-surface-variant border-t border-outline-variant">
               <span>
                 Showing {filteredHistory.length === 0 ? 0 : (safeHistoryPage - 1) * HISTORY_PER_PAGE + 1}–{Math.min(safeHistoryPage * HISTORY_PER_PAGE, filteredHistory.length)} of {filteredHistory.length}
               </span>
@@ -1226,8 +1226,6 @@ function Inventory() {
 
       {view === 'products' && (
         <>
-      <div className="mb-4"></div>
-
       {/* Mobile: stacked cards, hidden at lg and above */}
       <div className="lg:hidden space-y-3">
         {paginatedProducts.map((product) => {
@@ -1243,14 +1241,14 @@ function Inventory() {
                   {status.label}
                 </span>
               </div>
-              <div className="flex justify-between items-center mt-3">
+              <div className="flex flex-wrap justify-between items-center gap-x-3 gap-y-1 mt-3">
                 <span className="text-primary font-semibold">₱{product.selling_price}</span>
-                <p className="text-on-surface-variant text-xs mt-1">{formatStock(product)}</p>
-                <div className="space-x-3">
-                  <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium">
+                <p className="text-on-surface-variant text-xs flex-1 min-w-0 truncate">{formatStock(product)}</p>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium px-2 py-1.5 rounded hover:bg-surface-container-low">
                     Edit
                   </button>
-                  <button onClick={() => requestDelete(product.id)} className="text-error text-sm font-medium">
+                  <button onClick={() => requestDelete(product.id)} className="text-error text-sm font-medium px-2 py-1.5 rounded hover:bg-error-container">
                     Delete
                   </button>
                 </div>
@@ -1301,7 +1299,7 @@ function Inventory() {
         </table>
       </div>
 
-      <div className="flex justify-between items-center mt-4 text-sm text-on-surface-variant">
+      <div className="flex flex-wrap justify-between items-center gap-2 mt-4 text-sm text-on-surface-variant">
         <span>
           Showing {filteredProducts.length === 0 ? 0 : (page - 1) * PER_PAGE + 1}–{Math.min(page * PER_PAGE, filteredProducts.length)} of {filteredProducts.length}
         </span>

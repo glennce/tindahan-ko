@@ -114,9 +114,9 @@ function Customers() {
               </p>
             <div className="flex justify-between items-center mt-3">
               <span className="text-on-surface-variant text-sm">Limit: ₱{Number(c.credit_limit).toFixed(2)}</span>
-              <div className="space-x-3">
-                <button onClick={() => openEditModal(c)} className="text-primary text-sm font-medium">Edit</button>
-                <button onClick={() => requestDelete(c.id)} className="text-error text-sm font-medium">Delete</button>
+              <div className="space-x-1">
+                <button onClick={() => openEditModal(c)} className="text-primary text-sm font-medium px-2 py-1.5 rounded hover:bg-surface-container-low">Edit</button>
+                <button onClick={() => requestDelete(c.id)} className="text-error text-sm font-medium px-2 py-1.5 rounded hover:bg-error-container">Delete</button>
               </div>
             </div>
           </div>
@@ -150,9 +150,9 @@ function Customers() {
                 <td className="px-4 py-3 text-on-surface-variant">
                   ₱{(Number(c.credit_limit) - Number(c.balance)).toFixed(2)}
                 </td>
-                <td className="px-4 py-3 space-x-3">
-                  <button onClick={() => openEditModal(c)} className="text-primary text-sm font-medium">Edit</button>
-                  <button onClick={() => requestDelete(c.id)} className="text-error text-sm font-medium">Delete</button>
+                <td className="px-4 py-3 space-x-1">
+                  <button onClick={() => openEditModal(c)} className="text-primary text-sm font-medium px-2 py-1.5 rounded hover:bg-surface-container-low">Edit</button>
+                  <button onClick={() => requestDelete(c.id)} className="text-error text-sm font-medium px-2 py-1.5 rounded hover:bg-error-container">Delete</button>
                 </td>
               </tr>
             ))}

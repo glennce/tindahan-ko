@@ -591,8 +591,8 @@ function Utang() {
 
       {lendOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-surface rounded-xl w-full max-w-md shadow-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-outline-variant flex justify-between items-center">
+          <div className="bg-surface rounded-xl w-full max-w-md shadow-lg flex flex-col max-h-[90vh] overflow-y-auto">
+            <div className="px-4 py-3 border-b border-outline-variant flex justify-between items-center shrink-0">
               <h2 className="font-semibold text-on-surface">Lend Cash</h2>
               <button onClick={() => setLendOpen(false)} className="text-on-surface-variant text-xl">✕</button>
             </div>
@@ -674,8 +674,8 @@ function Utang() {
 
       {repayOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-surface rounded-xl w-full max-w-md shadow-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-outline-variant flex justify-between items-center">
+          <div className="bg-surface rounded-xl w-full max-w-md shadow-lg flex flex-col max-h-[90vh] overflow-y-auto">
+            <div className="px-4 py-3 border-b border-outline-variant flex justify-between items-center shrink-0">
               <h2 className="font-semibold text-on-surface">Cash Repayment</h2>
               <button onClick={() => setRepayOpen(false)} className="text-on-surface-variant text-xl">✕</button>
             </div>

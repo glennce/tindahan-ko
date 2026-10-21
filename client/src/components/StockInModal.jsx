@@ -73,7 +73,7 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-surface rounded-xl p-6 w-full max-w-md shadow-lg">
+      <div className="bg-surface rounded-xl p-4 sm:p-6 w-full max-w-md shadow-lg max-h-[90vh] overflow-y-auto">
         <h2 className="text-xl font-semibold text-on-surface mb-4">Stock In</h2>
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
@@ -101,7 +101,7 @@ function StockInModal({ isOpen, onClose, onSave, products }) {
             </select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-on-surface-variant">
                 Per Pack *

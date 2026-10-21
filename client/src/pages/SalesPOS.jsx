@@ -331,20 +331,28 @@ function SalesPOS() {
             <button
               disabled={page <= 1}
               onClick={() => setPage((p) => p - 1)}
-              className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+              className="px-3 py-2 border border-outline-variant rounded disabled:opacity-40"
             >
               Previous
             </button>
             <button
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
-              className="px-3 py-1 border border-outline-variant rounded disabled:opacity-40"
+              className="px-3 py-2 border border-outline-variant rounded disabled:opacity-40"
             >
               Next
             </button>
           </div>
         </div>
       </div>
+
+      {/* Mobile backdrop: tap to dismiss the cart sheet */}
+      {mobileCartOpen && (
+        <div
+          onClick={() => setMobileCartOpen(false)}
+          className="lg:hidden fixed inset-x-0 top-0 bottom-0 bg-black/30 z-40"
+        />
+      )}
 
       {/* Cart panel: always visible on desktop (lg+), an overlay on mobile */}
       <div
@@ -357,7 +365,7 @@ function SalesPOS() {
       >
         <div className="flex justify-between items-center mb-3 lg:hidden">
           <h2 className="font-semibold text-on-surface">Current Sale</h2>
-          <button onClick={() => setMobileCartOpen(false)} className="text-on-surface-variant text-xl">
+          <button onClick={() => setMobileCartOpen(false)} className="text-on-surface-variant text-xl p-2 -m-2">
             ✕
           </button>
         </div>
@@ -373,7 +381,7 @@ function SalesPOS() {
                 <p className="text-[10px] text-on-surface-variant uppercase tracking-wide font-medium truncate">
                   Often bought with {suggestions.anchor}
                 </p>
-                <button onClick={() => setSuggestions(null)} className="text-on-surface-variant text-xs px-1 shrink-0" title="Dismiss">
+                <button onClick={() => setSuggestions(null)} className="text-on-surface-variant text-xs px-1 py-2 shrink-0" title="Dismiss">
                   ✕
                 </button>
               </div>
@@ -397,7 +405,7 @@ function SalesPOS() {
                 <span className="text-on-surface text-sm font-medium">{item.name}</span>
                 <button
                   onClick={() => removeFromCart(item.product_id)}
-                  className="text-error text-xs"
+                  className="text-error text-xs p-2 -m-2"
                 >
                   ✕
                 </button>
@@ -406,14 +414,14 @@ function SalesPOS() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => changeQty(item.product_id, -1)}
-                    className="w-6 h-6 rounded-full bg-surface-container-high"
+                    className="h-8 w-8 sm:h-6 sm:w-6 rounded-full bg-surface-container-high"
                   >
                     −
                   </button>
                   <span className="text-sm">{item.quantity}</span>
                   <button
                     onClick={() => changeQty(item.product_id, 1)}
-                    className="w-6 h-6 rounded-full bg-surface-container-high"
+                    className="h-8 w-8 sm:h-6 sm:w-6 rounded-full bg-surface-container-high"
                   >
                     +
                   </button>
@@ -426,7 +434,7 @@ function SalesPOS() {
           ))}
         </div>
 
-        <div className="border-t border-outline-variant mt-3 pt-3">
+        <div className="border-t border-outline-variant mt-3 pt-3 shrink-0 max-h-[55dvh] overflow-y-auto">
           <div className="space-y-1 mb-3">
             <div className="flex justify-between text-sm text-on-surface-variant">
               <span>Subtotal</span>
@@ -440,7 +448,7 @@ function SalesPOS() {
                 value={discount}
                 onChange={(e) => setDiscount(e.target.value)}
                 placeholder="0.00"
-                className="w-24 text-right border border-outline-variant rounded-lg px-2 py-1 text-on-surface"
+                className="w-24 text-right border border-outline-variant rounded-lg px-2 py-1 text-on-surface text-base"
               />
             </div>
             <div className="flex justify-between font-bold text-on-surface text-lg pt-1 border-t border-outline-variant">

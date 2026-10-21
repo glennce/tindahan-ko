@@ -89,24 +89,24 @@ function Transactions() {
         <div>
           <label className="text-xs text-on-surface-variant block mb-1">From</label>
           <input type="date" value={start} onChange={(e) => { setStart(e.target.value); setPage(1); }}
-            className="border border-outline-variant rounded-lg px-2 py-1.5 text-sm" />
+            className="border border-outline-variant rounded-lg px-2 py-2 text-sm" />
         </div>
         <div>
           <label className="text-xs text-on-surface-variant block mb-1">To</label>
           <input type="date" value={end} onChange={(e) => { setEnd(e.target.value); setPage(1); }}
-            className="border border-outline-variant rounded-lg px-2 py-1.5 text-sm" />
+            className="border border-outline-variant rounded-lg px-2 py-2 text-sm" />
         </div>
         <div>
           <label className="text-xs text-on-surface-variant block mb-1">Type</label>
           <select value={type} onChange={(e) => { setType(e.target.value); setPage(1); }}
-            className="border border-outline-variant rounded-lg px-2 py-1.5 text-sm">
+            className="border border-outline-variant rounded-lg px-2 py-2 text-sm">
             {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
         <div>
           <label className="text-xs text-on-surface-variant block mb-1">Status</label>
           <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}
-            className="border border-outline-variant rounded-lg px-2 py-1.5 text-sm capitalize">
+            className="border border-outline-variant rounded-lg px-2 py-2 text-sm capitalize">
             {STATUS_OPTIONS.map((s) => <option key={s} value={s} className="capitalize">{s}</option>)}
           </select>
         </div>
@@ -156,7 +156,7 @@ function Transactions() {
                   <td className="px-4 py-3 text-right">
                     <button
                       onClick={() => viewDetail(t)}
-                      className="p-1.5 text-primary hover:bg-primary-container hover:text-on-primary rounded-md transition-colors"
+                      className="p-2 text-primary hover:bg-primary-container hover:text-on-primary rounded-md transition-colors"
                       title="View Details"
                     >
                       <Eye size={18} />
@@ -171,7 +171,7 @@ function Transactions() {
           </table>
           </div>
                     
-          <div className="flex justify-between items-center px-4 py-3 border-t border-outline-variant text-sm text-on-surface-variant"><span>Showing {data.transactions.length === 0 ? 0 : (page - 1) * limit + 1} to {(page - 1) * limit + data.transactions.length} of {data.total} entries</span>
+          <div className="flex flex-wrap justify-between items-center gap-2 px-4 py-3 border-t border-outline-variant text-sm text-on-surface-variant"><span>Showing {data.transactions.length === 0 ? 0 : (page - 1) * limit + 1} to {(page - 1) * limit + data.transactions.length} of {data.total} entries</span>
             <div className="flex gap-1">
               <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}
                 className="px-2 py-1 border border-outline-variant rounded disabled:opacity-40">‹</button>

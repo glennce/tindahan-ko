@@ -71,7 +71,7 @@ function RepackModal({ isOpen, onClose, onSave, products }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-surface rounded-xl p-6 w-full max-w-md shadow-lg max-h-[90vh] overflow-y-auto">
+      <div className="bg-surface rounded-xl p-4 sm:p-6 w-full max-w-md shadow-lg max-h-[90vh] overflow-y-auto">
         <h2 className="text-xl font-semibold text-on-surface mb-1">Repack / Convert</h2>
         <p className="text-xs text-on-surface-variant mb-4">
           Turn bulk stock into sellable pieces — e.g. 2 × ¼ Sugar → 15 × ₱2 Sugar, or 1 twin-pack coffee → 2 singles.

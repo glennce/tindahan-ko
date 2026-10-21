@@ -34,7 +34,7 @@ function Layout() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-dvh overflow-hidden bg-background">
       {/* Desktop sidebar — completely hidden below the lg breakpoint */}
       <aside className="hidden lg:flex w-60 shrink-0 bg-surface border-r border-outline-variant flex-col p-4 overflow-y-auto">
         <div className="mb-8">
@@ -76,14 +76,15 @@ function Layout() {
           <h1 className="text-primary text-lg font-bold">Tindahan Ko</h1>
         </header>
 
-        {/* pb-20 on mobile reserves space so content doesn't hide behind the fixed bottom nav */}
+        {/* pb-24 on mobile reserves space so content doesn't hide behind the fixed bottom nav */}
         <main className="flex-1 p-4 lg:p-8 pb-24 lg:pb-8 overflow-y-auto">
           <Outlet />
         </main>
       </div>
 
-      {/* Mobile bottom tab bar — shown only below lg */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-surface border-t border-outline-variant flex justify-around py-2 z-40">
+      {/* Mobile bottom tab bar — shown only below lg. Bottom padding includes the
+          iOS home-indicator safe-area inset so labels don't sit under the gesture bar. */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-surface border-t border-outline-variant flex justify-around pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] z-40">
         {mobileNavItems.map((item) => (
           <NavLink
             key={item.to}

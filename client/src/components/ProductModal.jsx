@@ -53,8 +53,8 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
   
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-surface rounded-xl p-6 w-full max-w-md shadow-lg max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-surface rounded-xl p-4 sm:p-6 w-full max-w-md shadow-lg max-h-[90vh] overflow-y-auto">
         <h2 className="text-xl font-semibold text-on-surface mb-4">
           {initialData ? 'Edit Product' : 'Add New Product'}
         </h2>
@@ -66,7 +66,7 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
               className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-on-surface-variant">SKU</label>
               <input
@@ -116,7 +116,7 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
               )}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-on-surface-variant">
                 {hasPack ? 'Cost Price per Pack (₱)' : 'Cost Price (₱)'}
@@ -152,7 +152,7 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-on-surface-variant">Stock Quantity</label>
               <input
@@ -177,7 +177,7 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
               className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-on-surface-variant">Units per Pack</label>
               <input

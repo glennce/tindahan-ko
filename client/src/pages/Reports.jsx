@@ -342,7 +342,7 @@ function Reports() {
               <button
                 key={p.key}
                 onClick={() => applyPreset(p.key)}
-                className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
+                className={`px-3 py-1.5 rounded-full text-xs font-medium border ${
                   activePreset === p.key
                     ? 'bg-primary text-white border-primary'
                     : 'border-outline-variant text-on-surface-variant hover:bg-surface-container-low'
@@ -353,10 +353,10 @@ function Reports() {
             ))}
           </div>
           <input type="date" value={start} onChange={(e) => { setStart(e.target.value); setActivePreset(null); }}
-            className="border border-outline-variant rounded-lg px-2 py-1 text-sm" />
+            className="border border-outline-variant rounded-lg px-2 py-2 text-sm" />
           <span className="text-on-surface-variant">to</span>
           <input type="date" value={end} onChange={(e) => { setEnd(e.target.value); setActivePreset(null); }}
-            className="border border-outline-variant rounded-lg px-2 py-1 text-sm" />
+            className="border border-outline-variant rounded-lg px-2 py-2 text-sm" />
           <button
             onClick={handleExportCsv}
             className="border border-outline-variant text-primary text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1"
@@ -385,7 +385,7 @@ function Reports() {
         </div>
 
         {/* Report content */}
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           {activeTab === 'product' ? (
             <ProductReport start={start} end={end} onDatesChange={(s, e) => { setStart(s); setEnd(e); }} />
           ) : !data ? (
@@ -508,28 +508,30 @@ function ShrinkageReport({ data }) {
         {data.by_reason.length === 0 ? (
           <p className="text-on-surface-variant text-sm">No stock audits in this range.</p>
         ) : (
-          <table className="w-full text-left text-sm">
-            <thead className="bg-surface-container-low text-on-surface-variant">
-              <tr>
-                <th className="px-4 py-2">Reason</th>
-                <th className="px-4 py-2">Adjustments</th>
-                <th className="px-4 py-2">Units</th>
-                <th className="px-4 py-2">Cost Impact</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.by_reason.map((r) => (
-                <tr key={r.reason} className="border-t border-outline-variant">
-                  <td className="px-4 py-2 text-on-surface">{LOSS_REASONS[r.reason] || r.reason}</td>
-                  <td className="px-4 py-2 text-on-surface-variant">{r.adjustments}</td>
-                  <td className="px-4 py-2 text-on-surface-variant">{Number(r.units) > 0 ? `+${Number(r.units)}` : Number(r.units)}</td>
-                  <td className={`px-4 py-2 font-medium ${Number(r.value) < 0 ? 'text-error' : 'text-secondary'}`}>
-                    ₱{Number(r.value).toFixed(2)}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm min-w-[520px]">
+              <thead className="bg-surface-container-low text-on-surface-variant">
+                <tr>
+                  <th className="px-4 py-2">Reason</th>
+                  <th className="px-4 py-2">Adjustments</th>
+                  <th className="px-4 py-2">Units</th>
+                  <th className="px-4 py-2">Cost Impact</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.by_reason.map((r) => (
+                  <tr key={r.reason} className="border-t border-outline-variant">
+                    <td className="px-4 py-2 text-on-surface">{LOSS_REASONS[r.reason] || r.reason}</td>
+                    <td className="px-4 py-2 text-on-surface-variant">{r.adjustments}</td>
+                    <td className="px-4 py-2 text-on-surface-variant">{Number(r.units) > 0 ? `+${Number(r.units)}` : Number(r.units)}</td>
+                    <td className={`px-4 py-2 font-medium ${Number(r.value) < 0 ? 'text-error' : 'text-secondary'}`}>
+                      ₱{Number(r.value).toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
@@ -598,7 +600,7 @@ function InventoryReport({ data, start, end }) {
       <div className="flex justify-between items-start">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1">
           <StatCard label="Total Stock Value (Cost)" value={`₱${data.total_stock_value.toFixed(2)}`} icon={Package} />
-          <div className="bg-surface border border-outline-variant rounded-xl p-4 flex gap-4">
+          <div className="bg-surface border border-outline-variant rounded-xl p-4 flex flex-wrap gap-4">
             <div><p className="text-secondary font-bold text-xl">{data.available}</p><p className="text-xs text-on-surface-variant">Available</p></div>
             <div><p className="text-orange-500 font-bold text-xl">{data.low_stock}</p><p className="text-xs text-on-surface-variant">Low Stock</p></div>
             <div><p className="text-error font-bold text-xl">{data.out_of_stock}</p><p className="text-xs text-on-surface-variant">Out of Stock</p></div>

@@ -364,7 +364,7 @@ export default function Shift() {
         <div className="flex-1 min-w-0">
           {activeTab === 'drawer' && (
             <div className="space-y-4">
-            <div className="bg-surface border border-outline-variant rounded-xl p-6">
+            <div className="bg-surface border border-outline-variant rounded-xl p-4 sm:p-6">
               <div className="flex justify-between items-start mb-4">
                 <h2 className="font-semibold text-on-surface">Today — {new Date(shift.shift_date).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</h2>
                 <span className={`${isClosed ? 'bg-primary-container text-on-primary' : 'bg-secondary-container text-secondary'} px-2 py-1 rounded-full text-xs font-medium`}>{isClosed ? 'Closed' : 'Active'}</span>
@@ -406,13 +406,13 @@ export default function Shift() {
               )}
             </div>
 
-            <div className="bg-surface border border-outline-variant rounded-xl p-6">
+            <div className="bg-surface border border-outline-variant rounded-xl p-4 sm:p-6">
               <div className="flex items-center gap-2 mb-1">
                 <div className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center"><Wallet className="text-on-primary" size={16} /></div>
                 <h2 className="font-semibold text-on-surface">Take Profit Home</h2>
               </div>
               <p className="text-xs text-on-surface-variant mb-4">Takes cash out of the drawer WITHOUT recording an expense — Net Profit stays correct. Use Expenses only for real store costs.</p>
-              <div className="grid grid-cols-3 gap-3 mb-4 text-center">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 text-center">
                 <div className="bg-surface-container-low rounded-lg p-3">
                   <p className="text-xs text-on-surface-variant">Total Gross Profit</p>
                   <p className="text-lg font-bold text-secondary">₱{Number(profit.total_gross ?? 0).toFixed(2)}</p>
@@ -454,7 +454,7 @@ export default function Shift() {
 
           {activeTab === 'transfers' && (
             <div className="space-y-4">
-              <div className="bg-surface border border-outline-variant rounded-xl p-6">
+              <div className="bg-surface border border-outline-variant rounded-xl p-4 sm:p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <div className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center"><ArrowLeftRight className="text-on-primary" size={16} /></div>
                   <h2 className="font-semibold text-on-surface">Money Transfer — Cash ↔ GCash</h2>
@@ -493,7 +493,7 @@ export default function Shift() {
 
           {activeTab === 'expenses' && (
             <div className="space-y-4">
-              <div className="bg-surface border border-outline-variant rounded-xl p-6">
+              <div className="bg-surface border border-outline-variant rounded-xl p-4 sm:p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <div className="w-8 h-8 rounded-full bg-error-container flex items-center justify-center"><Receipt className="text-error" size={16} /></div>
                   <h2 className="font-semibold text-on-surface">Record Expense</h2>
@@ -529,9 +529,9 @@ export default function Shift() {
                 <div className="flex flex-col lg:flex-row lg:justify-between gap-3 mb-4">
                   <h2 className="font-semibold text-on-surface">Expense Report</h2>
                   <div className="flex flex-wrap gap-2 items-center">
-                    <input type="date" value={reportStart} onChange={(e) => setReportStart(e.target.value)} className="border border-outline-variant rounded-lg px-2 py-1 text-sm" />
+                    <input type="date" value={reportStart} onChange={(e) => setReportStart(e.target.value)} className="border border-outline-variant rounded-lg px-2 py-2 text-sm" />
                     <span className="text-on-surface-variant text-sm">to</span>
-                    <input type="date" value={reportEnd} onChange={(e) => setReportEnd(e.target.value)} className="border border-outline-variant rounded-lg px-2 py-1 text-sm" />
+                    <input type="date" value={reportEnd} onChange={(e) => setReportEnd(e.target.value)} className="border border-outline-variant rounded-lg px-2 py-2 text-sm" />
                     <button onClick={handleExport} className="border border-outline-variant text-primary text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1"><Download size={16} /> Export CSV</button>
                   </div>
                 </div>
