@@ -1526,11 +1526,18 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
     const currentGross = await grossProfit(rangeStart, rangeEnd);
     const prevGross = await grossProfit(prevRangeStart, prevRangeEnd);
 
+    // Split expenses: restock = buying inventory, whose cost is already
+    // deducted per unit sold inside gross profit. Only real operating
+    // expenses (supplies, utilities...) belong in Net Profit.
     const expensesResult = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
+      `SELECT
+         COALESCE(SUM(amount) FILTER (WHERE category ILIKE 'restock'), 0) AS inventory,
+         COALESCE(SUM(amount) FILTER (WHERE NOT (category ILIKE 'restock')), 0) AS operating
+       FROM expenses WHERE created_at >= $1 AND created_at < $2`,
       [rangeStart, rangeEnd]
     );
-    const totalExpenses = Number(expensesResult.rows[0].total);
+    const inventoryPurchases = Number(expensesResult.rows[0].inventory);
+    const totalExpenses = Number(expensesResult.rows[0].operating);
     const netProfit = currentGross - totalExpenses;
     // Owner's take-home for the period — shown separately, NEVER subtracted
     // from net profit (recording profit-taking as an expense was making net
@@ -1568,6 +1575,7 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
       gross_profit: currentGross,
       prev_gross_profit: prevGross,
       total_expenses: totalExpenses,
+      inventory_purchases: inventoryPurchases,
       total_sales: totalSales,
       net_profit: netProfit,
       profit_taken: profitTaken,
