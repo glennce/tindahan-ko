@@ -84,6 +84,9 @@ function SalesPOS() {
   }, [search, activeCategory]);
 
   const addToCart = (product) => {
+    // Guard against malformed items — a cart row without an id would never
+    // dedupe and would fail on sale submission ("Product undefined not found").
+    if (!product || !product.id) return;
     setCart((prev) => {
       const existing = prev.find((item) => item.product_id === product.id);
       if (existing) {
@@ -113,7 +116,12 @@ function SalesPOS() {
   const loadSuggestions = (product) => {
     apiFetch(`${PRODUCTS_API}/${product.id}/associations`)
       .then((res) => res.json())
-      .then((d) => setSuggestions(Array.isArray(d) && d.length > 0 ? { anchor: product.name, items: d } : null))
+      .then((d) => {
+        // Normalize to the product shape addToCart expects (id/key, price,
+        // stock) — the API returns product_id as the key.
+        const items = Array.isArray(d) ? d.map((s) => ({ ...s, id: s.product_id })) : [];
+        setSuggestions(items.length > 0 ? { anchor: product.name, items } : null);
+      })
       .catch(() => setSuggestions(null));
   };
 
