@@ -1,6 +1,7 @@
 import { apiFetch } from '../api';
 import { useState, useEffect } from 'react';
 import ProductModal from '../components/ProductModal';
+import StockVisual from '../components/StockVisual';
 import RepackModal from '../components/RepackModal';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
@@ -1243,7 +1244,10 @@ function Inventory() {
               </div>
               <div className="flex flex-wrap justify-between items-center gap-x-3 gap-y-1 mt-3">
                 <span className="text-primary font-semibold">₱{product.selling_price}</span>
-                <p className="text-on-surface-variant text-xs flex-1 min-w-0 truncate">{formatStock(product)}</p>
+                <div className="flex-1 min-w-0 flex flex-col gap-1">
+                  <StockVisual product={product} />
+                  <p className="text-on-surface-variant text-xs truncate">{formatStock(product)}</p>
+                </div>
                 <div className="flex items-center gap-1">
                   <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium px-2 py-1.5 rounded hover:bg-surface-container-low">
                     Edit
@@ -1283,6 +1287,7 @@ function Inventory() {
                       {status.label}
                     </span>
                     <p className="text-on-surface-variant text-xs mt-1">{formatStock(product)}</p>
+                    <StockVisual product={product} className="mt-1.5" />
                   </td>
                   <td className="px-4 py-3 space-x-3">
                     <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium">

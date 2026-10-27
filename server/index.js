@@ -55,7 +55,8 @@ async function ensureDB() {
         low_stock_threshold INTEGER DEFAULT 10,
         supplier TEXT,
         units_per_pack INTEGER,
-        unit_label VARCHAR(50)
+        unit_label VARCHAR(50),
+        stock_icon TEXT
       );
     `);
     await pool.query(`
@@ -180,6 +181,7 @@ async function ensureDB() {
     // Ensure products has per-pack columns (deployed has them, local may not)
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS units_per_pack INTEGER`);
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS unit_label VARCHAR(50)`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_icon TEXT`);
     // Ensure sales has discount/subtotal/status if local DB is old (safe no-op if exists)
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS subtotal NUMERIC DEFAULT 0`);
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS discount_amount NUMERIC DEFAULT 0`);
@@ -429,17 +431,17 @@ app.get('/api/products/:id/associations', requireAuth, async (req, res) => {
 });
 
 app.post('/api/products', requireAuth, requireRole('owner'), async (req, res) => {
-  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
+  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, stock_icon } = req.body;
   const cleanSku = sku && sku.trim() !== '' ? sku.trim() : null;
   if (!name || selling_price === undefined) {
     return res.status(400).json({ error: 'Name and selling price are required' });
   }
   try {
     const result = await pool.query(
-      `INSERT INTO products (name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO products (name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, stock_icon)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [name, cleanSku, category, cost_price || 0, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier, units_per_pack || null, unit_label || null]
+      [name, cleanSku, category, cost_price || 0, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier, units_per_pack || null, unit_label || null, stock_icon || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -464,16 +466,16 @@ app.get('/api/products/:id', requireAuth, async (req, res) => {
 
 // Update a product
 app.put('/api/products/:id', requireAuth, requireRole('owner'), async (req, res) => {
-  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
+  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, stock_icon } = req.body;
   const cleanSku = sku && sku.trim() !== '' ? sku.trim() : null;
   try {
     const result = await pool.query(
       `UPDATE products
        SET name = $1, sku = $2, category = $3, cost_price = $4, selling_price = $5,
-           stock_quantity = $6, low_stock_threshold = $7, supplier = $8, units_per_pack = $9, unit_label = $10
-       WHERE id = $11
+           stock_quantity = $6, low_stock_threshold = $7, supplier = $8, units_per_pack = $9, unit_label = $10, stock_icon = $11
+       WHERE id = $12
        RETURNING *`,
-      [name, cleanSku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, req.params.id]
+      [name, cleanSku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, stock_icon || null, req.params.id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
     res.json(result.rows[0]);

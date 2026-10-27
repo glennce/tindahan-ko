@@ -19,7 +19,8 @@ const p=require('./db');
         low_stock_threshold INTEGER DEFAULT 10,
         supplier TEXT,
         units_per_pack INTEGER,
-        unit_label VARCHAR(50)
+        unit_label VARCHAR(50),
+        stock_icon TEXT
       )`);
   await p.query(`CREATE TABLE IF NOT EXISTS customers (
         id SERIAL PRIMARY KEY,
@@ -159,6 +160,7 @@ const p=require('./db');
         batch_id TEXT
       )`);
   await p.query(`ALTER TABLE restock_logs ADD COLUMN IF NOT EXISTS batch_id TEXT`);
+  await p.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_icon TEXT`);
   console.log('migration done');
   const r=await p.query(`SELECT column_name FROM information_schema.columns WHERE table_name='expenses'`);
   console.log(r.rows);
