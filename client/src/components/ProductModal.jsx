@@ -3,10 +3,8 @@ import { useState, useEffect } from 'react';
 const emptyForm = {
   name: '', sku: '', category: '', cost_price: '', selling_price: '',
   stock_quantity: '', low_stock_threshold: '10', supplier: '',
-  units_per_pack: '', unit_label: '', stock_icon: ''
+  units_per_pack: '', unit_label: ''
 };
-
-const ICON_PRESETS = ['🚬', '🥤', '💧', '🍪', '☕', '🍜', '🍬', '🧴', '🥫', '🍞', '🍦', '🍚', '📱', '📦'];
 
 function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = [] }) {
   const [form, setForm] = useState(emptyForm);
@@ -200,35 +198,6 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
           <p className="text-xs text-on-surface-variant -mt-2">
             Optional — only fill this in for products sold by pack but tracked by individual pieces (e.g. cigarettes).
           </p>
-          <div>
-            <label className="text-sm font-medium text-on-surface-variant">Stock Icon</label>
-            <div className="mt-1 flex flex-wrap items-center gap-1">
-              {ICON_PRESETS.map((emo) => (
-                <button
-                  key={emo}
-                  type="button"
-                  onClick={() => setForm((prev) => ({ ...prev, stock_icon: prev.stock_icon === emo ? '' : emo }))}
-                  className={`w-9 h-9 text-xl rounded-lg border flex items-center justify-center transition-colors ${
-                    form.stock_icon === emo
-                      ? 'border-primary bg-surface-container'
-                      : 'border-outline-variant hover:bg-surface-container-low'
-                  }`}
-                >
-                  {emo}
-                </button>
-              ))}
-              <input
-                name="stock_icon" value={form.stock_icon || ''}
-                onChange={handleChange}
-                maxLength={4}
-                placeholder="✏️?"
-                className="w-16 h-9 border border-outline-variant rounded-lg px-2 text-lg text-center"
-              />
-            </div>
-            <p className="text-xs text-on-surface-variant mt-1">
-              Optional emoji shown in inventory with a live stock visual (units fade out as stock is sold). Leave blank to auto-pick based on the product name.
-            </p>
-          </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button" onClick={onClose}
