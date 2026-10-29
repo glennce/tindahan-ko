@@ -185,6 +185,9 @@ async function ensureDB() {
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS discount_amount NUMERIC DEFAULT 0`);
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'`);
     await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS gcash_amount NUMERIC DEFAULT 0`);
+    await pool.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)`);
+    await pool.query(`ALTER TABLE utang_transactions ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)`);
+    await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'owner'`);
     // Cash drawer breakdown persistence (for history details: debt from credit, GCash paid)
     await pool.query(`ALTER TABLE cash_shifts ADD COLUMN IF NOT EXISTS cash_sales NUMERIC DEFAULT 0`);
@@ -607,8 +610,8 @@ app.post('/api/sales', requireAuth, async (req, res) => {
     }
 
     const saleResult = await client.query(
-      `INSERT INTO sales (customer_id, subtotal, discount_amount, total_amount, payment_method, amount_tendered, gcash_amount, change_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      `INSERT INTO sales (customer_id, subtotal, discount_amount, total_amount, payment_method, amount_tendered, gcash_amount, change_amount, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [
         customer_id || null,
         subtotal,
@@ -618,6 +621,7 @@ app.post('/api/sales', requireAuth, async (req, res) => {
         payment_method === 'split' ? splitCash : (amount_tendered || null),
         payment_method === 'split' ? splitGcash : null,
         change_amount,
+        req.user.id,
       ]
     );
     const sale = saleResult.rows[0];
@@ -678,9 +682,9 @@ app.post('/api/sales', requireAuth, async (req, res) => {
       }
     
       await client.query(
-        `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
-         VALUES ($1, $2, 'charge', $3, $4, $5)`,
-        [customer_id, sale.id, chargeAmount, newBalance, payment_method === 'split' ? 'Split sale (partial credit)' : 'Sale purchase']
+        `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note, created_by)
+         VALUES ($1, $2, 'charge', $3, $4, $5, $6)`,
+        [customer_id, sale.id, chargeAmount, newBalance, payment_method === 'split' ? 'Split sale (partial credit)' : 'Sale purchase', req.user.id]
       );
     }
 
@@ -748,9 +752,9 @@ app.post('/api/sales/:id/void', requireAuth, requireRole('owner'), async (req, r
         const newBalance = previousBalance - utangPortion;
       
         await client.query(
-          `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note)
-           VALUES ($1, $2, 'payment', $3, $4, 'Sale voided')`,
-          [sale.customer_id, sale.id, utangPortion, newBalance]
+          `INSERT INTO utang_transactions (customer_id, sale_id, type, amount, balance_after, note, created_by)
+           VALUES ($1, $2, 'payment', $3, $4, 'Sale voided', $5)`,
+          [sale.customer_id, sale.id, utangPortion, newBalance, req.user.id]
         );
       }
     }
@@ -980,7 +984,10 @@ app.get('/api/utang/:customerId/statement', requireAuth, async (req, res) => {
     );
     if (cust.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
     const txns = await pool.query(
-      `SELECT * FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at ASC, id ASC`,
+      `SELECT ut.*, u.name AS created_by_name
+       FROM utang_transactions ut
+       LEFT JOIN users u ON u.id = ut.created_by
+       WHERE ut.customer_id = $1 ORDER BY ut.created_at ASC, ut.id ASC`,
       [req.params.customerId]
     );
     const charges = txns.rows.filter((t) => t.type === 'charge');
@@ -1056,7 +1063,10 @@ app.get('/api/utang/:customerId', requireAuth, async (req, res) => {
   }
   try {
     const history = await pool.query(
-      `SELECT * FROM utang_transactions WHERE customer_id = $1 ORDER BY created_at DESC, id DESC`,
+      `SELECT ut.*, u.name AS created_by_name
+       FROM utang_transactions ut
+       LEFT JOIN users u ON u.id = ut.created_by
+       WHERE ut.customer_id = $1 ORDER BY ut.created_at DESC, ut.id DESC`,
       [req.params.customerId]
     );
     res.json(history.rows);
@@ -1108,9 +1118,9 @@ app.post('/api/utang/payment', requireAuth, async (req, res) => {
 
     const method = payment_method === 'gcash' ? 'gcash' : 'cash';
     const result = await pool.query(
-      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note)
-       VALUES ($1, 'payment', $2, $3, $4, $5) RETURNING *`,
-      [customer_id, amount, newBalance, method, note || null]
+      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note, created_by)
+       VALUES ($1, 'payment', $2, $3, $4, $5, $6) RETURNING *`,
+      [customer_id, amount, newBalance, method, note || null, req.user.id]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -1144,9 +1154,9 @@ app.post('/api/utang/cash-loan', requireAuth, async (req, res) => {
       });
     }
     const result = await pool.query(
-      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note)
-       VALUES ($1, 'cash_loan', $2, $3, 'cash', $4) RETURNING *`,
-      [customer_id, Number(amount), newBalance, note || 'Cash loan']
+      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note, created_by)
+       VALUES ($1, 'cash_loan', $2, $3, 'cash', $4, $5) RETURNING *`,
+      [customer_id, Number(amount), newBalance, note || 'Cash loan', req.user.id]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -1192,9 +1202,9 @@ app.post('/api/utang/cash-loan/payment', requireAuth, async (req, res) => {
     const newBalance = currentBalance - Number(amount);
     const method = payment_method === 'gcash' ? 'gcash' : 'cash';
     const result = await pool.query(
-      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note)
-       VALUES ($1, 'cash_loan_payment', $2, $3, $4, $5) RETURNING *`,
-      [customer_id, Number(amount), newBalance, method, note || null]
+      `INSERT INTO utang_transactions (customer_id, type, amount, balance_after, payment_method, note, created_by)
+       VALUES ($1, 'cash_loan_payment', $2, $3, $4, $5, $6) RETURNING *`,
+      [customer_id, Number(amount), newBalance, method, note || null, req.user.id]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -1218,35 +1228,43 @@ app.get('/api/transactions', requireAuth, requireRole('owner'), async (req, res)
                   WHEN s.payment_method = 'gcash' THEN 'Sale (GCash)'
                   WHEN s.payment_method = 'split' THEN 'Sale (Split)'
                   ELSE 'Sale (Cash)' END AS type_label,
-             s.status
+             s.status,
+             su.name AS created_by_name
       FROM sales s
       LEFT JOIN customers c ON c.id = s.customer_id
+      LEFT JOIN users su ON su.id = s.created_by
 
       UNION ALL
 
       SELECT 'utang_payment' AS source, ut.id, ut.created_at,
              c.name AS customer_name, ut.amount AS amount,
-             'Utang Payment' AS type_label, 'completed' AS status
+             'Utang Payment' AS type_label, 'completed' AS status,
+             uu.name AS created_by_name
       FROM utang_transactions ut
       JOIN customers c ON c.id = ut.customer_id
+      LEFT JOIN users uu ON uu.id = ut.created_by
       WHERE ut.type = 'payment'
 
       UNION ALL
 
       SELECT 'cash_loan' AS source, ut.id, ut.created_at,
              c.name AS customer_name, ut.amount AS amount,
-             'Cash Loan' AS type_label, 'completed' AS status
+             'Cash Loan' AS type_label, 'completed' AS status,
+             uu.name AS created_by_name
       FROM utang_transactions ut
       JOIN customers c ON c.id = ut.customer_id
+      LEFT JOIN users uu ON uu.id = ut.created_by
       WHERE ut.type = 'cash_loan'
 
       UNION ALL
 
       SELECT 'cash_loan_payment' AS source, ut.id, ut.created_at,
              c.name AS customer_name, ut.amount AS amount,
-             'Cash Loan Repayment' AS type_label, 'completed' AS status
+             'Cash Loan Repayment' AS type_label, 'completed' AS status,
+             uu.name AS created_by_name
       FROM utang_transactions ut
       JOIN customers c ON c.id = ut.customer_id
+      LEFT JOIN users uu ON uu.id = ut.created_by
       WHERE ut.type = 'cash_loan_payment'
     )
   `;
@@ -1288,8 +1306,11 @@ app.get('/api/transactions/:source/:id', requireAuth, requireRole('owner'), asyn
   try {
     if (source === 'sale') {
       const sale = await pool.query(
-        `SELECT s.*, c.name AS customer_name FROM sales s
-         LEFT JOIN customers c ON c.id = s.customer_id WHERE s.id = $1`,
+        `SELECT s.*, c.name AS customer_name, u.name AS created_by_name
+         FROM sales s
+         LEFT JOIN customers c ON c.id = s.customer_id
+         LEFT JOIN users u ON u.id = s.created_by
+         WHERE s.id = $1`,
         [id]
       );
       if (sale.rows.length === 0) return res.status(404).json({ error: 'Not found' });
@@ -1303,8 +1324,11 @@ app.get('/api/transactions/:source/:id', requireAuth, requireRole('owner'), asyn
 
     if (source === 'utang_payment' || source === 'cash_loan' || source === 'cash_loan_payment') {
       const payment = await pool.query(
-        `SELECT ut.*, c.name AS customer_name FROM utang_transactions ut
-         JOIN customers c ON c.id = ut.customer_id WHERE ut.id = $1`,
+        `SELECT ut.*, c.name AS customer_name, u.name AS created_by_name
+         FROM utang_transactions ut
+         JOIN customers c ON c.id = ut.customer_id
+         LEFT JOIN users u ON u.id = ut.created_by
+         WHERE ut.id = $1`,
         [id]
       );
       if (payment.rows.length === 0) return res.status(404).json({ error: 'Not found' });
@@ -1321,7 +1345,11 @@ app.get('/api/transactions/:source/:id', requireAuth, requireRole('owner'), asyn
 // Expenses CRUD (simple, no update/delete needed for now)
 app.get('/api/expenses', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM expenses ORDER BY created_at DESC LIMIT 20');
+    const result = await pool.query(
+      `SELECT e.*, u.name AS created_by_name
+       FROM expenses e LEFT JOIN users u ON u.id = e.created_by
+       ORDER BY e.created_at DESC LIMIT 20`
+    );
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -1382,8 +1410,8 @@ app.post('/api/expenses', requireAuth, async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `INSERT INTO expenses (category, amount, description, payment_method) VALUES ($1, $2, $3, $4) RETURNING *`,
-      [category, amount, description, method]
+      `INSERT INTO expenses (category, amount, description, payment_method, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [category, amount, description, method, req.user.id]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -2045,8 +2073,10 @@ app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, 
       [rangeStart, rangeEnd]
     );
     const recent = await pool.query(
-      `SELECT * FROM expenses WHERE created_at >= $1 AND created_at < $2
-       ORDER BY created_at DESC LIMIT 20`,
+      `SELECT e.*, u.name AS created_by_name
+       FROM expenses e LEFT JOIN users u ON u.id = e.created_by
+       WHERE e.created_at >= $1 AND e.created_at < $2
+       ORDER BY e.created_at DESC LIMIT 20`,
       [rangeStart, rangeEnd]
     );
 
@@ -3060,11 +3090,11 @@ app.get('/api/shift/activity', requireAuth, async (req, res) => {
         LEFT JOIN users u2 ON u2.id = cs.closed_by
         WHERE cs.status = 'closed'
         UNION ALL
-        SELECT
-          'expense', e.id, e.created_at, NULL::date,
+        SELECT 'expense', e.id, e.created_at, NULL::date,
           e.category, COALESCE(e.payment_method, 'cash'),
-          e.amount, NULL::numeric, e.description, NULL::text
+          e.amount, NULL::numeric, e.description, u.name
         FROM expenses e
+        LEFT JOIN users u ON u.id = e.created_by
         UNION ALL
         SELECT
           'transfer', t.id, t.created_at, NULL::date,

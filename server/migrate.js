@@ -159,6 +159,9 @@ const p=require('./db');
         batch_id TEXT
       )`);
   await p.query(`ALTER TABLE restock_logs ADD COLUMN IF NOT EXISTS batch_id TEXT`);
+  await p.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)`);
+  await p.query(`ALTER TABLE utang_transactions ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)`);
+  await p.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)`);
   console.log('migration done');
   const r=await p.query(`SELECT column_name FROM information_schema.columns WHERE table_name='expenses'`);
   console.log(r.rows);

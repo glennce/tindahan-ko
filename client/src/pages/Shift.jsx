@@ -580,6 +580,7 @@ export default function Shift() {
                               <th className="px-4 py-3">Category</th>
                               <th className="px-4 py-3">Amount</th>
                               <th className="px-4 py-3">Payment Method</th>
+                              <th className="px-4 py-3">Recorded By</th>
                               <th className="px-4 py-3">Description</th>
                               {user?.role === 'owner' && <th className="px-4 py-3 text-right">Action</th>}
                             </tr>
@@ -591,6 +592,7 @@ export default function Shift() {
                                 <td className="px-4 py-3 text-on-surface"><span className="flex items-center gap-1"><span>{expenseIcon[ex.category]||'📦'}</span>{ex.category}</span></td>
                                 <td className="px-4 py-3 text-error font-medium">₱{Number(ex.amount).toFixed(2)}</td>
                                 <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${ex.payment_method==='gcash' ? 'bg-secondary-container text-secondary' : 'bg-primary-container text-on-primary'}`}>{ex.payment_method || 'cash'}</span></td>
+                                <td className="px-4 py-3 text-on-surface-variant">{ex.created_by_name || '—'}</td>
                                 <td className="px-4 py-3 text-on-surface-variant">{ex.description || '—'}</td>
                                 {user?.role === 'owner' && (
                                   <td className="px-4 py-3 text-right whitespace-nowrap">
@@ -600,7 +602,7 @@ export default function Shift() {
                                 )}
                               </tr>
                             ))}
-                            {reportData.recent.length===0 && <tr><td colSpan={user?.role === 'owner' ? 6 : 5} className="px-4 py-6 text-center text-on-surface-variant">No expenses in this period.</td></tr>}
+                            {reportData.recent.length===0 && <tr><td colSpan={user?.role === 'owner' ? 7 : 6} className="px-4 py-6 text-center text-on-surface-variant">No expenses in this period.</td></tr>}
                           </tbody>
                         </table>
                       </div>

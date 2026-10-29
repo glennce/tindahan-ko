@@ -125,6 +125,7 @@ function Transactions() {
                 <th className="px-4 py-3">Total</th>
                 <th className="px-4 py-3">Type</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">By</th>
                 <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
@@ -153,6 +154,7 @@ function Transactions() {
                       {t.status}
                     </span>
                   </td>
+                  <td className="px-4 py-3">{t.created_by_name || '—'}</td>
                   <td className="px-4 py-3 text-right">
                     <button
                       onClick={() => viewDetail(t)}
@@ -165,7 +167,7 @@ function Transactions() {
                 </tr>
               ))}
               {data.transactions.length === 0 && (
-                <tr><td colSpan={6} className="px-4 py-6 text-center text-on-surface-variant">No transactions in this range.</td></tr>
+                <tr><td colSpan={7} className="px-4 py-6 text-center text-on-surface-variant">No transactions in this range.</td></tr>
               )}
             </tbody>
           </table>
@@ -197,6 +199,7 @@ function Transactions() {
                   <>
                     <p className="text-on-surface-variant text-sm mb-3">
                       #{selected.id} · {selected.customer_name || 'Walk-in'} · {new Date(selected.created_at).toLocaleString()}
+                      {selected.created_by_name && <span className="font-medium text-on-surface"> · By {selected.created_by_name}</span>}
                     </p>
                     <div className="space-y-2 mb-3">
                       {selected.items.map((item) => (
@@ -251,6 +254,7 @@ function Transactions() {
                   <>
                     <p className="text-on-surface-variant text-sm mb-3">
                       #{selected.id} · {selected.customer_name} · {new Date(selected.created_at).toLocaleString()}
+                      {selected.created_by_name && <span className="font-medium text-on-surface"> · By {selected.created_by_name}</span>}
                     </p>
                     <div className="flex justify-between font-bold text-on-surface border-t border-outline-variant pt-2">
                       <span>Amount Paid</span><span>₱{Number(selected.amount).toFixed(2)}</span>

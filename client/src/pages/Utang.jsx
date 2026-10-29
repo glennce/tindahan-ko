@@ -518,6 +518,7 @@ function Utang() {
                           <p className="text-on-surface-variant text-xs truncate">
                             {new Date(h.created_at).toLocaleDateString()}
                             {h.note ? ` · ${h.note}` : ''}
+                            {h.created_by_name ? ` · By ${h.created_by_name}` : ''}
                             {h.sale_id ? ` · #${h.sale_id}` : ''}
                           </p>
                         </div>
