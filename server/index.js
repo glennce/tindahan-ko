@@ -332,6 +332,117 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// ---- User management (owner only) ----
+const ROLES = ['owner', 'cashier'];
+
+const publicUser = (u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, created_at: u.created_at });
+
+const validateUserFields = ({ name, email, password, role }, { requirePassword = false } = {}) => {
+  if (!name || !name.trim()) return 'Name is required';
+  if (!email || !/^\S+@\S+\.\S+$/.test(email.trim())) return 'A valid email is required';
+  if (role && !ROLES.includes(role)) return 'Invalid role';
+  if (requirePassword && (!password || password.length < 6)) return 'Password must be at least 6 characters';
+  if (password && password.length > 0 && password.length < 6) return 'Password must be at least 6 characters';
+  return null;
+};
+
+app.get('/api/users', requireAuth, requireRole('owner'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, email, role, created_at FROM users ORDER BY role DESC, name ASC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+app.post('/api/users', requireAuth, requireRole('owner'), async (req, res) => {
+  const { name, email, password, role } = req.body;
+  const invalid = validateUserFields({ name, email, password, role }, { requirePassword: true });
+  if (invalid) return res.status(400).json({ error: invalid });
+  try {
+    const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email.trim()]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'A user with this email already exists' });
+    }
+    if (password === 'admin123') {
+      return res.status(400).json({ error: 'Please choose a secure password' });
+    }
+    const password_hash = await bcrypt.hash(password, 10);
+    const result = await pool.query(
+      `INSERT INTO users (name, email, password_hash, role)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, email, role, created_at`,
+      [name.trim(), email.trim().toLowerCase(), password_hash, role || 'cashier']
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+app.put('/api/users/:id', requireAuth, requireRole('owner'), async (req, res) => {
+  const { name, email, password, role } = req.body;
+  const targetId = Number(req.params.id);
+  const invalid = validateUserFields({ name, email, password, role });
+  if (invalid) return res.status(400).json({ error: invalid });
+  if (role && role !== 'owner' && req.user.id === targetId && req.user.role === 'owner') {
+    return res.status(400).json({ error: "You can't change your own role" });
+  }
+  try {
+    const existingEmail = await pool.query('SELECT id FROM users WHERE email = $1 AND id <> $2', [email.trim(), targetId]);
+    if (existingEmail.rows.length > 0) {
+      return res.status(400).json({ error: 'Another user already has this email' });
+    }
+    let password_hash = null;
+    if (password) password_hash = await bcrypt.hash(password, 10);
+    const result = await pool.query(
+      `UPDATE users
+       SET name = $1, email = $2, role = $3, password_hash = COALESCE($4, password_hash)
+       WHERE id = $5
+       RETURNING id, name, email, role, created_at`,
+      [name.trim(), email.trim().toLowerCase(), role || 'cashier', password_hash, targetId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    // Guard: every owner demotion must leave at least one owner behind.
+    if (result.rows[0].role !== 'owner') {
+      const owners = await pool.query(`SELECT COUNT(*)::int AS n FROM users WHERE role = 'owner'`);
+      if (owners.rows[0].n === 0) {
+        return res.status(400).json({ error: 'The store must keep at least one owner account' });
+      }
+    }
+    res.json(publicUser(result.rows[0]));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+app.delete('/api/users/:id', requireAuth, requireRole('owner'), async (req, res) => {
+  const targetId = Number(req.params.id);
+  try {
+    if (targetId === req.user.id) {
+      return res.status(400).json({ error: "You can't delete your own account" });
+    }
+    const owners = await pool.query(`SELECT id FROM users WHERE role = 'owner'`);
+    if (owners.rows.length === 1 && owners.rows[0].id === targetId) {
+      return res.status(400).json({ error: 'You cannot delete the last owner account' });
+    }
+    const result = await pool.query(
+      `DELETE FROM users WHERE id = $1 RETURNING id, name`,
+      [targetId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ message: 'User deleted', user: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
 // Real database-backed route
 app.get('/api/products', requireAuth, async (req, res) => {
   try {

@@ -16,6 +16,7 @@ function Layout() {
     { to: '/transactions', label: 'Transactions', roles: ['owner'] },
     { to: '/reports', label: 'Reports', roles: ['owner'] },
     { to: '/shift', label: 'Cash Drawer', roles: ['owner', 'cashier'] },
+    { to: '/users', label: 'Users', roles: ['owner'] },
   ].filter((item) => item.roles.includes(user?.role));
   
   const mobileNavItems = [

@@ -30,6 +30,9 @@ function More() {
             <Link to="/reports" className="block px-4 py-3 text-on-surface font-medium">
               Reports
             </Link>
+            <Link to="/users" className="block px-4 py-3 text-on-surface font-medium">
+              Users
+            </Link>
           </>
         )}
         <button onClick={handleLogout} className="w-full text-left px-4 py-3 text-error font-medium">
