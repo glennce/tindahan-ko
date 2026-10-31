@@ -1516,13 +1516,32 @@ app.post('/api/expenses/:id/convert-to-withdrawal', requireAuth, requireRole('ow
 app.post('/api/expenses', requireAuth, async (req, res) => {
   const { category, amount, description, payment_method } = req.body;
   const method = payment_method === 'gcash' ? 'gcash' : 'cash';
-  if (!category || !amount) {
+  // Normalize typo/case variants so expense reports group cleanly
+  // ("transport" → "Transportation", "Store supply" → "Store Supplies", ...).
+  const normalizedCategory = (() => {
+    const cleaned = String(category || '').trim().toLowerCase();
+    const aliases = {
+      transport: 'Transportation',
+      transportation: 'Transportation',
+      transportations: 'Transportation',
+      'store supply': 'Store Supplies',
+      'store supplies': 'Store Supplies',
+      'storesupplies': 'Store Supplies',
+      restock: 'Restock',
+      utility: 'Utilities',
+      utilities: 'Utilities',
+      rent: 'Rent',
+      other: 'Other',
+    };
+    return aliases[cleaned] || String(category).trim();
+  })();
+  if (!normalizedCategory || !amount) {
     return res.status(400).json({ error: 'Category and amount are required' });
   }
   try {
     const result = await pool.query(
       `INSERT INTO expenses (category, amount, description, payment_method, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [category, amount, description, method, req.user.id]
+      [normalizedCategory, amount, description, method, req.user.id]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {

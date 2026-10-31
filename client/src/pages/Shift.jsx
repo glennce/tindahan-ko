@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import ConfirmModal from '../components/ConfirmModal';
 import StatCard from '../components/StatCard';
 import { pctChange, downloadCsv, firstOfMonth, today } from '../utils';
-import { Eye, Wallet, Smartphone, Receipt, Download, ArrowLeftRight, History, Trash2 } from 'lucide-react';
+import { Eye, Wallet, Smartphone, Receipt, Download, ArrowLeftRight, History, Trash2, Package, Info } from 'lucide-react';
 
 const TABS = [
   { key: 'drawer', label: 'Drawer', icon: Wallet },
@@ -493,6 +493,18 @@ export default function Shift() {
 
           {activeTab === 'expenses' && (
             <div className="space-y-4">
+              <div className="bg-surface-container-low border border-outline-variant rounded-xl p-3 sm:p-4 flex items-start gap-3">
+                <Package className="text-primary mt-0.5 shrink-0" size={20} />
+                <div className="text-sm">
+                  <p className="font-medium text-on-surface">Buying new stock for the store?</p>
+                  <p className="text-on-surface-variant text-xs mt-0.5">
+                    Every purchase must be recorded so your Cash in Hand stays accurate. Best: use{' '}
+                    <span className="font-medium text-primary">Inventory → Stock In</span> — it logs the cost automatically.
+                    Buying outside the app (sari-sari store top-ups, supplier runs)? Log it below as{' '}
+                    <span className="font-medium text-primary">Restock</span>, with the full amount you paid.
+                  </p>
+                </div>
+              </div>
               <div className="bg-surface border border-outline-variant rounded-xl p-4 sm:p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <div className="w-8 h-8 rounded-full bg-error-container flex items-center justify-center"><Receipt className="text-error" size={16} /></div>
@@ -505,6 +517,12 @@ export default function Shift() {
                     <select value={expenseForm.category} onChange={(e) => setExpenseForm((f) => ({ ...f, category: e.target.value }))} className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1">
                       <option>Restock</option><option>Store Supplies</option><option>Utilities</option><option>Rent</option><option>Transportation</option><option>Other</option>
                     </select>
+                    {expenseForm.category === 'Restock' && (
+                      <p className="text-xs text-on-surface-variant mt-1 flex items-start gap-1.5">
+                        <Info size={13} className="mt-0.5 shrink-0 text-primary" />
+                        Stock purchase — the full amount you paid the supplier will be deducted from the drawer (Cash or GCash, based on the method below).
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm text-on-surface-variant">Amount</label>
