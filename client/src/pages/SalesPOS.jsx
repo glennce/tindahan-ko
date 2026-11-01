@@ -307,12 +307,22 @@ function SalesPOS() {
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">
           {paginatedProducts.map((product) => {
             const outOfStock = product.stock_quantity <= 0;
+            const inCart = cart.find((item) => item.product_id === product.id);
+            const cartQty = inCart ? inCart.quantity : 0;
             return (
               <div
                 key={product.id}
-                className="bg-surface border border-outline-variant rounded-xl p-3"
+                className="relative bg-surface border border-outline-variant rounded-xl p-3"
               >
-                <p className="font-medium text-on-surface text-sm lg:text-base">{product.name}</p>
+                {cartQty > 0 && (
+                  <span
+                    title={`${cartQty} in current sale`}
+                    className="absolute top-2 right-2 min-w-6 h-6 px-1.5 inline-flex items-center justify-center rounded-full bg-primary text-on-primary text-xs font-bold"
+                  >
+                    {cartQty}
+                  </span>
+                )}
+                <p className="font-medium text-on-surface text-sm lg:text-base pr-7">{product.name}</p>
                 <p className="text-primary font-semibold">₱{product.selling_price}</p>
                 <p className="text-on-surface-variant text-sm mb-2">
                   {formatStock(product)}
