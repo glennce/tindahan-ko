@@ -64,7 +64,25 @@ function Dashboard() {
   }, [trendRange]);
 
   if (error) return <p className="text-error">Error: {error}</p>;
-  if (!data) return <p className="text-on-surface-variant">Loading dashboard...</p>;
+  if (!data) {
+    // Skeleton mirrors the real layout so the page doesn't jump when data lands.
+    return (
+      <div aria-busy="true">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="bg-surface border border-outline-variant rounded-xl p-4 animate-pulse">
+              <div className="h-3 w-20 rounded bg-surface-container-high" />
+              <div className="h-6 w-28 rounded bg-surface-container-high mt-3" />
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2 bg-surface border border-outline-variant rounded-xl p-4 animate-pulse h-64" />
+          <div className="bg-surface border border-outline-variant rounded-xl p-4 animate-pulse h-64" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

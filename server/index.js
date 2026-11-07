@@ -203,6 +203,16 @@ async function ensureDB() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items (sale_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_sale_items_product_id ON sale_items (product_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales (created_at)`);
+    // Ledger scans ask for the latest transaction per customer; this index
+    // keeps those DISTINCT ON queries fast instead of full-table sorts.
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_utang_customer_created ON utang_transactions (customer_id, created_at, id)`);
+    // Reports filter these tables by created_at constantly; without indexes
+    // every scans the whole table, hammering page-load time.
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_expenses_created_at ON expenses (created_at)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_stock_adjustments_created_at ON stock_adjustments (created_at)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_profit_withdrawals_created_at ON profit_withdrawals (created_at)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_money_transfers_created_at ON money_transfers (created_at)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_utang_type_created ON utang_transactions (type, created_at)`);
     await pool.query(`
       UPDATE sale_items si SET cost_price = p.cost_price
       FROM products p WHERE p.id = si.product_id AND (si.cost_price IS NULL OR si.cost_price = 0)
@@ -886,48 +896,53 @@ app.get('/api/dashboard', requireAuth, requireRole('owner'), async (req, res) =>
     const today = manilaToday();
     const { start, end } = manilaDayBounds(today);
 
-    const salesToday = await pool.query(`
-      SELECT COALESCE(SUM(total_amount),0) AS total_sales, COUNT(*) AS transaction_count
-      FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'
-    `, [start, end]);
+    // All queries run in parallel. Running them sequentially made the wall
+    // time the SUM of every DB roundtrip, which the dashboard data load
+    // extremely slow on hosted/free-tier Postgres.
+    const [salesToday, profitToday, lowStock, topSelling, latestUtang] = await Promise.all([
+      pool.query(`
+        SELECT COALESCE(SUM(total_amount),0) AS total_sales, COUNT(*) AS transaction_count
+        FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'
+      `, [start, end]),
 
-    const profitToday = await pool.query(`
-      SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit,
-             COALESCE(SUM(si.quantity),0) AS items_sold
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id
-      JOIN products p ON p.id = si.product_id
-      WHERE s.created_at >= $1 AND s.created_at < $2 AND s.status = 'completed'
-    `, [start, end]);
+      pool.query(`
+        SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit,
+               COALESCE(SUM(si.quantity),0) AS items_sold
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        JOIN products p ON p.id = si.product_id
+        WHERE s.created_at >= $1 AND s.created_at < $2 AND s.status = 'completed'
+      `, [start, end]),
 
-    const lowStock = await pool.query(`
-      SELECT id, name, stock_quantity, units_per_pack, unit_label FROM products
-      WHERE stock_quantity <= low_stock_threshold
-      ORDER BY stock_quantity ASC
-      LIMIT 5
-    `);
+      // Window count replaces a second COUNT(*) roundtrip: fetch the 5 rows
+      // and the grand total of low-stock products in a single query.
+      pool.query(`
+        SELECT id, name, stock_quantity, units_per_pack, unit_label,
+               COUNT(*) OVER() AS total_count
+        FROM products
+        WHERE stock_quantity <= low_stock_threshold
+        ORDER BY stock_quantity ASC
+        LIMIT 5
+      `),
 
-    const lowStockCount = await pool.query(`
-      SELECT COUNT(*) AS count FROM products WHERE stock_quantity <= low_stock_threshold
-    `);
+      pool.query(`
+        SELECT p.id, p.name, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        JOIN products p ON p.id = si.product_id
+        WHERE s.created_at >= $1 AND s.created_at < $2 AND s.status = 'completed'
+        GROUP BY p.id, p.name
+        ORDER BY qty_sold DESC
+        LIMIT 4
+      `, [start, end]),
 
-    const topSelling = await pool.query(`
-      SELECT p.id, p.name, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id
-      JOIN products p ON p.id = si.product_id
-      WHERE s.created_at >= $1 AND s.created_at < $2 AND s.status = 'completed'
-      GROUP BY p.id, p.name
-      ORDER BY qty_sold DESC
-      LIMIT 4
-    `, [start, end]);
-
-    const latestUtang = await pool.query(`
-      SELECT DISTINCT ON (ut.customer_id) ut.customer_id, ut.balance_after, ut.created_at, c.name
-      FROM utang_transactions ut
-      JOIN customers c ON c.id = ut.customer_id
-      ORDER BY ut.customer_id, ut.created_at DESC, ut.id DESC
-    `);
+      pool.query(`
+        SELECT DISTINCT ON (ut.customer_id) ut.customer_id, ut.balance_after, ut.created_at, c.name
+        FROM utang_transactions ut
+        JOIN customers c ON c.id = ut.customer_id
+        ORDER BY ut.customer_id, ut.created_at DESC, ut.id DESC
+      `),
+    ]);
 
     const outstanding = latestUtang.rows.filter((r) => Number(r.balance_after) > 0);
     const totalOutstanding = outstanding.reduce((sum, r) => sum + Number(r.balance_after), 0);
@@ -940,7 +955,7 @@ app.get('/api/dashboard', requireAuth, requireRole('owner'), async (req, res) =>
       transaction_count: Number(salesToday.rows[0].transaction_count),
       gross_profit: Number(profitToday.rows[0].gross_profit),
       items_sold: Number(profitToday.rows[0].items_sold),
-      low_stock_count: Number(lowStockCount.rows[0].count),
+      low_stock_count: Number(lowStock.rows[0]?.total_count ?? 0),
       low_stock_items: lowStock.rows,
       top_selling: topSelling.rows,
       total_outstanding_utang: totalOutstanding,
@@ -1004,22 +1019,24 @@ app.get('/api/dashboard/trend', requireAuth, requireRole('owner'), async (req, r
 // List all customers with their current balance (ledger pattern again)
 app.get('/api/utang', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT DISTINCT ON (c.id) c.id AS customer_id, c.name, c.credit_limit,
-             COALESCE(ut.balance_after, 0) AS balance, ut.created_at AS last_active
-      FROM customers c
-      LEFT JOIN utang_transactions ut ON ut.customer_id = c.id
-      ORDER BY c.id, ut.created_at DESC, ut.id DESC
-    `);
-    // Split each balance into store credit vs cash loan so the UI can show
-    // exactly what a customer's "owed" amount consists of.
-    const cash = await pool.query(`
-      SELECT customer_id,
-             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS loaned,
-             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS repaid
-      FROM utang_transactions
-      GROUP BY customer_id
-    `);
+    const [result, cash] = await Promise.all([
+      pool.query(`
+        SELECT DISTINCT ON (c.id) c.id AS customer_id, c.name, c.credit_limit,
+               COALESCE(ut.balance_after, 0) AS balance, ut.created_at AS last_active
+        FROM customers c
+        LEFT JOIN utang_transactions ut ON ut.customer_id = c.id
+        ORDER BY c.id, ut.created_at DESC, ut.id DESC
+      `),
+      // Split each balance into store credit vs cash loan so the UI can show
+      // exactly what a customer's "owed" amount consists of.
+      pool.query(`
+        SELECT customer_id,
+               COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS loaned,
+               COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS repaid
+        FROM utang_transactions
+        GROUP BY customer_id
+      `),
+    ]);
     const cashByCustomer = new Map(
       cash.rows.map((r) => [r.customer_id, Math.max(Number(r.loaned) - Number(r.repaid), 0)])
     );
@@ -1039,28 +1056,30 @@ app.get('/api/utang', requireAuth, async (req, res) => {
 
 app.get('/api/utang/summary', requireAuth, async (req, res) => {
   try {
-    const outstanding = await pool.query(`
-      SELECT COALESCE(SUM(balance_after), 0) AS total, COUNT(*) AS customer_count
-      FROM (
-        SELECT DISTINCT ON (customer_id) customer_id, balance_after
+    const [outstanding, paymentsToday, cashStats] = await Promise.all([
+      pool.query(`
+        SELECT COALESCE(SUM(balance_after), 0) AS total, COUNT(*) AS customer_count
+        FROM (
+          SELECT DISTINCT ON (customer_id) customer_id, balance_after
+          FROM utang_transactions
+          ORDER BY customer_id, created_at DESC, id DESC
+        ) latest
+        WHERE balance_after > 0
+      `),
+      pool.query(`
+        SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
         FROM utang_transactions
-        ORDER BY customer_id, created_at DESC, id DESC
-      ) latest
-      WHERE balance_after > 0
-    `);
-    const paymentsToday = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
-      FROM utang_transactions
-      WHERE type = 'payment' AND created_at::date = CURRENT_DATE
-    `);
-    // Cash loans are monitoring-only (drawer-excluded): report them separately
-    const cashStats = await pool.query(`
-      SELECT COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS loaned,
-             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS repaid,
-             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan' AND created_at::date = CURRENT_DATE), 0) AS loaned_today,
-             COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment' AND created_at::date = CURRENT_DATE), 0) AS repaid_today
-      FROM utang_transactions
-    `);
+        WHERE type = 'payment' AND created_at::date = CURRENT_DATE
+      `),
+      // Cash loans are monitoring-only (drawer-excluded): report them separately
+      pool.query(`
+        SELECT COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS loaned,
+               COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS repaid,
+               COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan' AND created_at::date = CURRENT_DATE), 0) AS loaned_today,
+               COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment' AND created_at::date = CURRENT_DATE), 0) AS repaid_today
+        FROM utang_transactions
+      `),
+    ]);
     res.json({
       total_outstanding: Number(outstanding.rows[0].total),
       customers_with_balance: Number(outstanding.rows[0].customer_count),
@@ -1083,24 +1102,27 @@ app.get('/api/utang/:customerId/statement', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Invalid customer id' });
   }
   try {
-    const cust = await pool.query(
-      `SELECT c.*, COALESCE(latest.balance_after, 0) AS balance
-       FROM customers c
-       LEFT JOIN LATERAL (
-         SELECT balance_after FROM utang_transactions
-         WHERE customer_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1
-       ) latest ON true
-       WHERE c.id = $1`,
-      [req.params.customerId]
-    );
+    // Customer row and full ledger are independent — fetch together.
+    const [cust, txns] = await Promise.all([
+      pool.query(
+        `SELECT c.*, COALESCE(latest.balance_after, 0) AS balance
+         FROM customers c
+         LEFT JOIN LATERAL (
+           SELECT balance_after FROM utang_transactions
+           WHERE customer_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1
+         ) latest ON true
+         WHERE c.id = $1`,
+        [req.params.customerId]
+      ),
+      pool.query(
+        `SELECT ut.*, u.name AS created_by_name
+         FROM utang_transactions ut
+         LEFT JOIN users u ON u.id = ut.created_by
+         WHERE ut.customer_id = $1 ORDER BY ut.created_at ASC, ut.id ASC`,
+        [req.params.customerId]
+      ),
+    ]);
     if (cust.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
-    const txns = await pool.query(
-      `SELECT ut.*, u.name AS created_by_name
-       FROM utang_transactions ut
-       LEFT JOIN users u ON u.id = ut.created_by
-       WHERE ut.customer_id = $1 ORDER BY ut.created_at ASC, ut.id ASC`,
-      [req.params.customerId]
-    );
     const charges = txns.rows.filter((t) => t.type === 'charge');
     const payments = txns.rows.filter((t) => t.type === 'payment');
     const cashLoans = txns.rows.filter((t) => t.type === 'cash_loan');
@@ -1416,20 +1438,22 @@ app.get('/api/transactions/:source/:id', requireAuth, requireRole('owner'), asyn
   const { source, id } = req.params;
   try {
     if (source === 'sale') {
-      const sale = await pool.query(
-        `SELECT s.*, c.name AS customer_name, u.name AS created_by_name
-         FROM sales s
-         LEFT JOIN customers c ON c.id = s.customer_id
-         LEFT JOIN users u ON u.id = s.created_by
-         WHERE s.id = $1`,
-        [id]
-      );
+      const [sale, items] = await Promise.all([
+        pool.query(
+          `SELECT s.*, c.name AS customer_name, u.name AS created_by_name
+           FROM sales s
+           LEFT JOIN customers c ON c.id = s.customer_id
+           LEFT JOIN users u ON u.id = s.created_by
+           WHERE s.id = $1`,
+          [id]
+        ),
+        pool.query(
+          `SELECT si.*, p.name AS product_name FROM sale_items si
+           JOIN products p ON p.id = si.product_id WHERE si.sale_id = $1`,
+          [id]
+        ),
+      ]);
       if (sale.rows.length === 0) return res.status(404).json({ error: 'Not found' });
-      const items = await pool.query(
-        `SELECT si.*, p.name AS product_name FROM sale_items si
-         JOIN products p ON p.id = si.product_id WHERE si.sale_id = $1`,
-        [id]
-      );
       return res.json({ source: 'sale', ...sale.rows[0], items: items.rows });
     }
 
@@ -1557,44 +1581,42 @@ app.get('/api/reports', requireAuth, requireRole('owner'), async (req, res) => {
     return res.status(400).json({ error: 'start and end query params are required' });
   }
   try {
-    const totals = await pool.query(
-      `SELECT COALESCE(SUM(total_amount),0) AS total_sales
-       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'`,
-      [start, end]
-    );
-
-    const profit = await pool.query(
-      `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
-       FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-       JOIN products p ON p.id = si.product_id
-       WHERE s.created_at::date BETWEEN $1 AND $2`,
-      [start, end]
-    );
-
-    const expenseTotal = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total_expenses
-       FROM expenses WHERE created_at::date BETWEEN $1 AND $2`,
-      [start, end]
-    );
-
-    const trend = await pool.query(
-      `SELECT created_at::date AS day, SUM(total_amount) AS total
-       FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'
-       GROUP BY day ORDER BY day`,
-      [start, end]
-    );
-
-    const categories = await pool.query(
-      `SELECT COALESCE(p.category, 'Uncategorized') AS category, SUM(si.subtotal) AS revenue
-       FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-       JOIN products p ON p.id = si.product_id
-       WHERE s.created_at::date BETWEEN $1 AND $2
-       GROUP BY p.category
-       ORDER BY revenue DESC`,
-      [start, end]
-    );
+    const [totals, profit, expenseTotal, trend, categories] = await Promise.all([
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount),0) AS total_sales
+         FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'`,
+        [start, end]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
+         FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         JOIN products p ON p.id = si.product_id
+         WHERE s.created_at::date BETWEEN $1 AND $2`,
+        [start, end]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total_expenses
+         FROM expenses WHERE created_at::date BETWEEN $1 AND $2`,
+        [start, end]
+      ),
+      pool.query(
+        `SELECT created_at::date AS day, SUM(total_amount) AS total
+         FROM sales WHERE created_at::date BETWEEN $1 AND $2 AND status = 'completed'
+         GROUP BY day ORDER BY day`,
+        [start, end]
+      ),
+      pool.query(
+        `SELECT COALESCE(p.category, 'Uncategorized') AS category, SUM(si.subtotal) AS revenue
+         FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         JOIN products p ON p.id = si.product_id
+         WHERE s.created_at::date BETWEEN $1 AND $2
+         GROUP BY p.category
+         ORDER BY revenue DESC`,
+        [start, end]
+      ),
+    ]);
 
     res.json({
       total_sales: Number(totals.rows[0].total_sales),
@@ -1617,31 +1639,33 @@ app.get('/api/reports/sales', requireAuth, requireRole('owner'), async (req, res
   const { start: prevRangeStart, end: prevRangeEnd } = manilaRangeBounds(prevStart, prevEnd);
 
   try {
-    const current = await pool.query(
-      `SELECT COALESCE(SUM(total_amount),0) AS total, COUNT(*) AS count
-       FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
-      [rangeStart, rangeEnd]
-    );
-    const previous = await pool.query(
-      `SELECT COALESCE(SUM(total_amount),0) AS total
-       FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
-      [prevRangeStart, prevRangeEnd]
-    );
-    const trend = await pool.query(
-      `SELECT (created_at AT TIME ZONE 'Asia/Manila')::date AS day, SUM(total_amount) AS total
-       FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'
-       GROUP BY day ORDER BY day`,
-      [rangeStart, rangeEnd]
-    );
-    const categories = await pool.query(
-      `SELECT COALESCE(p.category, 'Uncategorized') AS category, SUM(si.subtotal) AS revenue
-       FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-       JOIN products p ON p.id = si.product_id
-       WHERE s.created_at >= $1 AND s.created_at < $2
-       GROUP BY p.category ORDER BY revenue DESC`,
-      [rangeStart, rangeEnd]
-    );
+    const [current, previous, trend, categories] = await Promise.all([
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount),0) AS total, COUNT(*) AS count
+         FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount),0) AS total
+         FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
+        [prevRangeStart, prevRangeEnd]
+      ),
+      pool.query(
+        `SELECT (created_at AT TIME ZONE 'Asia/Manila')::date AS day, SUM(total_amount) AS total
+         FROM sales WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'
+         GROUP BY day ORDER BY day`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(p.category, 'Uncategorized') AS category, SUM(si.subtotal) AS revenue
+         FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         JOIN products p ON p.id = si.product_id
+         WHERE s.created_at >= $1 AND s.created_at < $2
+         GROUP BY p.category ORDER BY revenue DESC`,
+        [rangeStart, rangeEnd]
+      ),
+    ]);
 
     res.json({
       total_sales: Number(current.rows[0].total),
@@ -1669,7 +1693,7 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
   const { start: prevRangeStart, end: prevRangeEnd } = manilaRangeBounds(prevStart, prevEnd);
 
   try {
-    const grossProfit = async (s, e) => {
+    const singleGross = async (s, e) => {
       const r = await pool.query(
         `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
          FROM sale_items si
@@ -1681,53 +1705,49 @@ app.get('/api/reports/profit', requireAuth, requireRole('owner'), async (req, re
       return Number(r.rows[0].gross_profit);
     };
 
-    const currentGross = await grossProfit(rangeStart, rangeEnd);
-    const prevGross = await grossProfit(prevRangeStart, prevRangeEnd);
+    // All independent totals run in one wave instead of six roundtrips in a row.
+    const [currentGross, prevGross, expensesResult, takenResult, salesResult, trend] = await Promise.all([
+      singleGross(rangeStart, rangeEnd),
+      singleGross(prevRangeStart, prevRangeEnd),
+      pool.query(
+        `SELECT
+           COALESCE(SUM(amount) FILTER (WHERE category ILIKE 'restock'), 0) AS inventory,
+           COALESCE(SUM(amount) FILTER (WHERE NOT (category ILIKE 'restock')), 0) AS operating
+         FROM expenses WHERE created_at >= $1 AND created_at < $2`,
+        [rangeStart, rangeEnd]
+      ),
+      // Owner's take-home for the period — shown separately, NEVER subtracted
+      // from net profit (recording profit-taking as an expense was making net
+      // profit go negative).
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE created_at >= $1 AND created_at < $2`,
+        [rangeStart, rangeEnd]
+      ).catch(() => ({ rows: [{ total: 0 }] })),
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount),0) AS total FROM sales
+         WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT (s.created_at AT TIME ZONE 'Asia/Manila')::date AS day,
+                SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity) AS profit
+         FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         JOIN products p ON p.id = si.product_id
+         WHERE s.created_at >= $1 AND s.created_at < $2
+         GROUP BY day ORDER BY day`,
+        [rangeStart, rangeEnd]
+      ),
+    ]);
 
     // Split expenses: restock = buying inventory, whose cost is already
     // deducted per unit sold inside gross profit. Only real operating
     // expenses (supplies, utilities...) belong in Net Profit.
-    const expensesResult = await pool.query(
-      `SELECT
-         COALESCE(SUM(amount) FILTER (WHERE category ILIKE 'restock'), 0) AS inventory,
-         COALESCE(SUM(amount) FILTER (WHERE NOT (category ILIKE 'restock')), 0) AS operating
-       FROM expenses WHERE created_at >= $1 AND created_at < $2`,
-      [rangeStart, rangeEnd]
-    );
     const inventoryPurchases = Number(expensesResult.rows[0].inventory);
     const totalExpenses = Number(expensesResult.rows[0].operating);
     const netProfit = currentGross - totalExpenses;
-    // Owner's take-home for the period — shown separately, NEVER subtracted
-    // from net profit (recording profit-taking as an expense was making net
-    // profit go negative).
-    let profitTaken = 0;
-    try {
-      const takenResult = await pool.query(
-        `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE created_at >= $1 AND created_at < $2`,
-        [rangeStart, rangeEnd]
-      );
-      profitTaken = Number(takenResult.rows[0].total);
-    } catch {
-      profitTaken = 0;
-    }
-
-    const salesResult = await pool.query(
-      `SELECT COALESCE(SUM(total_amount),0) AS total FROM sales
-       WHERE created_at >= $1 AND created_at < $2 AND status = 'completed'`,
-      [rangeStart, rangeEnd]
-    );
+    const profitTaken = Number(takenResult.rows[0].total);
     const totalSales = Number(salesResult.rows[0].total);
-
-    const trend = await pool.query(
-      `SELECT (s.created_at AT TIME ZONE 'Asia/Manila')::date AS day,
-              SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity) AS profit
-       FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-       JOIN products p ON p.id = si.product_id
-       WHERE s.created_at >= $1 AND s.created_at < $2
-       GROUP BY day ORDER BY day`,
-      [rangeStart, rangeEnd]
-    );
 
     res.json({
       gross_profit: currentGross,
@@ -1758,66 +1778,68 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
   const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
 
   try {
-    const stockValue = await pool.query(
-      `SELECT COALESCE(SUM(cost_price * stock_quantity), 0) AS value FROM products`
-    );
-    const statusCounts = await pool.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE stock_quantity <= 0) AS out_of_stock,
-        COUNT(*) FILTER (WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold) AS low_stock,
-        COUNT(*) FILTER (WHERE stock_quantity > low_stock_threshold) AS available
-      FROM products
-    `);
-    const topMovers = await pool.query(
-      `SELECT p.id, p.name, SUM(si.quantity) AS qty_sold
-       FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-       JOIN products p ON p.id = si.product_id
-       WHERE s.created_at >= $1 AND s.created_at < $2
-       GROUP BY p.id, p.name ORDER BY qty_sold DESC LIMIT 5`,
-      [rangeStart, rangeEnd]
-    );
-    const slowMovers = await pool.query(
-      `SELECT p.id, p.name, p.stock_quantity
-       FROM products p
-       WHERE p.id NOT IN (
-         SELECT DISTINCT si.product_id FROM sale_items si
+    const [stockValue, statusCounts, topMovers, slowMovers, lowStockList, outOfStockList] = await Promise.all([
+      pool.query(
+        `SELECT COALESCE(SUM(cost_price * stock_quantity), 0) AS value FROM products`
+      ),
+      pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE stock_quantity <= 0) AS out_of_stock,
+          COUNT(*) FILTER (WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold) AS low_stock,
+          COUNT(*) FILTER (WHERE stock_quantity > low_stock_threshold) AS available
+        FROM products
+      `),
+      pool.query(
+        `SELECT p.id, p.name, SUM(si.quantity) AS qty_sold
+         FROM sale_items si
          JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         JOIN products p ON p.id = si.product_id
          WHERE s.created_at >= $1 AND s.created_at < $2
-       )
-       ORDER BY p.stock_quantity DESC LIMIT 5`,
-      [rangeStart, rangeEnd]
-    );
-    const lowStockList = await pool.query(`
-      SELECT p.id, p.name, p.category, p.stock_quantity, p.low_stock_threshold,
-             p.units_per_pack, p.unit_label,
-             COALESCE(sold.qty, 0) AS qty_sold
-      FROM products p
-      LEFT JOIN (
-        SELECT si.product_id AS pid, SUM(si.quantity) AS qty
-        FROM sale_items si
-        JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-        WHERE s.created_at >= $1 AND s.created_at < $2
-        GROUP BY si.product_id
-      ) sold ON sold.pid = p.id
-      WHERE p.stock_quantity > 0 AND p.stock_quantity <= p.low_stock_threshold
-      ORDER BY p.stock_quantity ASC
-    `, [rangeStart, rangeEnd]);
-    const outOfStockList = await pool.query(`
-      SELECT p.id, p.name, p.category, p.stock_quantity, p.low_stock_threshold,
-             p.units_per_pack, p.unit_label,
-             COALESCE(sold.qty, 0) AS qty_sold
-      FROM products p
-      LEFT JOIN (
-        SELECT si.product_id AS pid, SUM(si.quantity) AS qty
-        FROM sale_items si
-        JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-        WHERE s.created_at >= $1 AND s.created_at < $2
-        GROUP BY si.product_id
-      ) sold ON sold.pid = p.id
-      WHERE p.stock_quantity <= 0
-      ORDER BY p.name ASC
-    `, [rangeStart, rangeEnd]);
+         GROUP BY p.id, p.name ORDER BY qty_sold DESC LIMIT 5`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT p.id, p.name, p.stock_quantity
+         FROM products p
+         WHERE p.id NOT IN (
+           SELECT DISTINCT si.product_id FROM sale_items si
+           JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+           WHERE s.created_at >= $1 AND s.created_at < $2
+         )
+         ORDER BY p.stock_quantity DESC LIMIT 5`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(`
+        SELECT p.id, p.name, p.category, p.stock_quantity, p.low_stock_threshold,
+               p.units_per_pack, p.unit_label,
+               COALESCE(sold.qty, 0) AS qty_sold
+        FROM products p
+        LEFT JOIN (
+          SELECT si.product_id AS pid, SUM(si.quantity) AS qty
+          FROM sale_items si
+          JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+          WHERE s.created_at >= $1 AND s.created_at < $2
+          GROUP BY si.product_id
+        ) sold ON sold.pid = p.id
+        WHERE p.stock_quantity > 0 AND p.stock_quantity <= p.low_stock_threshold
+        ORDER BY p.stock_quantity ASC
+      `, [rangeStart, rangeEnd]),
+      pool.query(`
+        SELECT p.id, p.name, p.category, p.stock_quantity, p.low_stock_threshold,
+               p.units_per_pack, p.unit_label,
+               COALESCE(sold.qty, 0) AS qty_sold
+        FROM products p
+        LEFT JOIN (
+          SELECT si.product_id AS pid, SUM(si.quantity) AS qty
+          FROM sale_items si
+          JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+          WHERE s.created_at >= $1 AND s.created_at < $2
+          GROUP BY si.product_id
+        ) sold ON sold.pid = p.id
+        WHERE p.stock_quantity <= 0
+        ORDER BY p.name ASC
+      `, [rangeStart, rangeEnd]),
+    ]);
 
     res.json({
       total_stock_value: Number(stockValue.rows[0].value),
@@ -1841,32 +1863,34 @@ app.get('/api/reports/utang', requireAuth, requireRole('owner'), async (req, res
   const { start: rangeStart, end: rangeEnd } = manilaRangeBounds(start, end);
 
   try {
-    const outstanding = await pool.query(`
-      SELECT COALESCE(SUM(balance_after), 0) AS total
-      FROM (
-        SELECT DISTINCT ON (customer_id) customer_id, balance_after
-        FROM utang_transactions ORDER BY customer_id, created_at DESC, id DESC
-      ) latest WHERE balance_after > 0
-    `);
-    const periodActivity = await pool.query(
-      `SELECT
-        COALESCE(SUM(amount) FILTER (WHERE type = 'charge'), 0) AS charged,
-        COALESCE(SUM(amount) FILTER (WHERE type = 'payment'), 0) AS paid,
-        COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS cash_loaned,
-        COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS cash_repaid
-       FROM utang_transactions WHERE created_at >= $1 AND created_at < $2`,
-      [rangeStart, rangeEnd]
-    );
-    const topDebtors = await pool.query(`
-      SELECT c.id, c.name, latest.balance_after AS balance
-      FROM customers c
-      JOIN LATERAL (
-        SELECT balance_after FROM utang_transactions
-        WHERE customer_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1
-      ) latest ON true
-      WHERE latest.balance_after > 0
-      ORDER BY latest.balance_after DESC LIMIT 5
-    `);
+    const [outstanding, periodActivity, topDebtors] = await Promise.all([
+      pool.query(`
+        SELECT COALESCE(SUM(balance_after), 0) AS total
+        FROM (
+          SELECT DISTINCT ON (customer_id) customer_id, balance_after
+          FROM utang_transactions ORDER BY customer_id, created_at DESC, id DESC
+        ) latest WHERE balance_after > 0
+      `),
+      pool.query(
+        `SELECT
+          COALESCE(SUM(amount) FILTER (WHERE type = 'charge'), 0) AS charged,
+          COALESCE(SUM(amount) FILTER (WHERE type = 'payment'), 0) AS paid,
+          COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan'), 0) AS cash_loaned,
+          COALESCE(SUM(amount) FILTER (WHERE type = 'cash_loan_payment'), 0) AS cash_repaid
+         FROM utang_transactions WHERE created_at >= $1 AND created_at < $2`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(`
+        SELECT c.id, c.name, latest.balance_after AS balance
+        FROM customers c
+        JOIN LATERAL (
+          SELECT balance_after FROM utang_transactions
+          WHERE customer_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1
+        ) latest ON true
+        WHERE latest.balance_after > 0
+        ORDER BY latest.balance_after DESC LIMIT 5
+      `),
+    ]);
 
     res.json({
       total_outstanding: Number(outstanding.rows[0].total),
@@ -1890,54 +1914,56 @@ app.get('/api/reports/losses', requireAuth, requireRole('owner'), async (req, re
   const { start: prevRangeStart, end: prevRangeEnd } = manilaRangeBounds(prevStart, prevEnd);
 
   try {
-    const totals = await pool.query(
-      `SELECT
-        COUNT(*) AS total_counts,
-        COUNT(*) FILTER (WHERE difference < 0) AS shortage_counts,
-        COUNT(*) FILTER (WHERE difference > 0) AS overage_counts,
-        COALESCE(SUM(difference) FILTER (WHERE difference < 0), 0) AS units_lost,
-        COALESCE(SUM(cost_impact) FILTER (WHERE difference < 0), 0) AS lost_value,
-        COALESCE(SUM(difference) FILTER (WHERE difference > 0), 0) AS overage_units,
-        COALESCE(SUM(cost_impact) FILTER (WHERE difference > 0), 0) AS overage_value
-       FROM stock_adjustments
-       WHERE created_at >= $1 AND created_at < $2`,
-      [rangeStart, rangeEnd]
-    );
-    const prevTotal = await pool.query(
-      `SELECT COALESCE(SUM(cost_impact) FILTER (WHERE difference < 0), 0) AS lost_value
-       FROM stock_adjustments
-       WHERE created_at >= $1 AND created_at < $2`,
-      [prevRangeStart, prevRangeEnd]
-    );
-    const byReason = await pool.query(
-      `SELECT reason, COUNT(*) AS adjustments,
-              COALESCE(SUM(difference), 0) AS units,
-              COALESCE(SUM(cost_impact), 0) AS value
-       FROM stock_adjustments
-       WHERE created_at >= $1 AND created_at < $2
-       GROUP BY reason ORDER BY value ASC`,
-      [rangeStart, rangeEnd]
-    );
-    const topItems = await pool.query(
-      `SELECT product_id, product_name,
-              COALESCE(SUM(difference), 0) AS units_lost,
-              COALESCE(SUM(cost_impact), 0) AS value
-       FROM stock_adjustments
-       WHERE created_at >= $1 AND created_at < $2 AND difference < 0
-       GROUP BY product_id, product_name
-       ORDER BY value ASC LIMIT 10`,
-      [rangeStart, rangeEnd]
-    );
-    const recent = await pool.query(
-      `SELECT sa.id, sa.product_id, sa.product_name, sa.system_qty, sa.counted_qty,
-              sa.difference, sa.reason, sa.notes, sa.cost_impact, sa.created_at,
-              u.name AS created_by_name
-       FROM stock_adjustments sa
-       LEFT JOIN users u ON u.id = sa.created_by
-       WHERE sa.created_at >= $1 AND sa.created_at < $2
-       ORDER BY sa.created_at DESC LIMIT 50`,
-      [rangeStart, rangeEnd]
-    );
+    const [totals, prevTotal, byReason, topItems, recent] = await Promise.all([
+      pool.query(
+        `SELECT
+          COUNT(*) AS total_counts,
+          COUNT(*) FILTER (WHERE difference < 0) AS shortage_counts,
+          COUNT(*) FILTER (WHERE difference > 0) AS overage_counts,
+          COALESCE(SUM(difference) FILTER (WHERE difference < 0), 0) AS units_lost,
+          COALESCE(SUM(cost_impact) FILTER (WHERE difference < 0), 0) AS lost_value,
+          COALESCE(SUM(difference) FILTER (WHERE difference > 0), 0) AS overage_units,
+          COALESCE(SUM(cost_impact) FILTER (WHERE difference > 0), 0) AS overage_value
+         FROM stock_adjustments
+         WHERE created_at >= $1 AND created_at < $2`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(cost_impact) FILTER (WHERE difference < 0), 0) AS lost_value
+         FROM stock_adjustments
+         WHERE created_at >= $1 AND created_at < $2`,
+        [prevRangeStart, prevRangeEnd]
+      ),
+      pool.query(
+        `SELECT reason, COUNT(*) AS adjustments,
+                COALESCE(SUM(difference), 0) AS units,
+                COALESCE(SUM(cost_impact), 0) AS value
+         FROM stock_adjustments
+         WHERE created_at >= $1 AND created_at < $2
+         GROUP BY reason ORDER BY value ASC`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT product_id, product_name,
+                COALESCE(SUM(difference), 0) AS units_lost,
+                COALESCE(SUM(cost_impact), 0) AS value
+         FROM stock_adjustments
+         WHERE created_at >= $1 AND created_at < $2 AND difference < 0
+         GROUP BY product_id, product_name
+         ORDER BY value ASC LIMIT 10`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT sa.id, sa.product_id, sa.product_name, sa.system_qty, sa.counted_qty,
+                sa.difference, sa.reason, sa.notes, sa.cost_impact, sa.created_at,
+                u.name AS created_by_name
+         FROM stock_adjustments sa
+         LEFT JOIN users u ON u.id = sa.created_by
+         WHERE sa.created_at >= $1 AND sa.created_at < $2
+         ORDER BY sa.created_at DESC LIMIT 50`,
+        [rangeStart, rangeEnd]
+      ),
+    ]);
 
     const row = totals.rows[0];
     res.json({
@@ -2012,46 +2038,49 @@ app.get('/api/reports/product-sales', requireAuth, requireRole('owner'), async (
     const trendJoin = uniqueCategories.length > 0 ? `JOIN products p ON p.id = si.product_id` : '';
     const trendCategoryFilter = uniqueCategories.length > 0 ? `AND p.category = ANY($${params.length})` : '';
     // Actually params already includes category if present, so use same
-    const trend = await pool.query(`
-      SELECT ${groupExpr} AS period,
-             SUM(si.quantity) AS qty_sold,
-             SUM(si.subtotal) AS revenue,
-             COUNT(DISTINCT s.id) AS transactions
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id AND s.status='completed'
-      ${trendJoin}
-      WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter} ${trendCategoryFilter}
-      GROUP BY 1
-      ORDER BY 1
-    `, params);
-    const total = await pool.query(`
-      SELECT COALESCE(SUM(si.quantity),0) AS total_qty,
-             COALESCE(SUM(si.subtotal),0) AS total_revenue,
-             COUNT(DISTINCT s.id) AS total_transactions
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id AND s.status='completed'
-      ${trendJoin}
-      WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter} ${trendCategoryFilter}
-    `, params);
-    // For top products, filter by category if selected, and respect date range
-    let topProducts = { rows: [] };
-    if (!product_id) {
-      const topParams = [rangeStart, rangeEnd];
-      let topCategoryFilter = '';
-      if (uniqueCategories.length > 0) {
-        topCategoryFilter = `AND p.category = ANY($3)`;
-        topParams.push(uniqueCategories);
-      }
-      topProducts = await pool.query(`
-        SELECT p.id, p.name, p.category, p.stock_quantity, p.units_per_pack, p.unit_label, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
+    // Trend, totals, and top products share the same filters — run together.
+    const [trend, total, topProducts] = await Promise.all([
+      pool.query(`
+        SELECT ${groupExpr} AS period,
+               SUM(si.quantity) AS qty_sold,
+               SUM(si.subtotal) AS revenue,
+               COUNT(DISTINCT s.id) AS transactions
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id AND s.status='completed'
-        JOIN products p ON p.id = si.product_id
-        WHERE s.created_at >= $1 AND s.created_at < $2 ${topCategoryFilter}
-        GROUP BY p.id, p.name, p.category, p.stock_quantity, p.units_per_pack, p.unit_label
-        ORDER BY qty_sold DESC
-      `, topParams);
-    }
+        ${trendJoin}
+        WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter} ${trendCategoryFilter}
+        GROUP BY 1
+        ORDER BY 1
+      `, params),
+      pool.query(`
+        SELECT COALESCE(SUM(si.quantity),0) AS total_qty,
+               COALESCE(SUM(si.subtotal),0) AS total_revenue,
+               COUNT(DISTINCT s.id) AS total_transactions
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id AND s.status='completed'
+        ${trendJoin}
+        WHERE s.created_at >= $1 AND s.created_at < $2 ${productFilter} ${trendCategoryFilter}
+      `, params),
+      product_id
+        ? Promise.resolve({ rows: [] })
+        : (() => {
+            const topParams = [rangeStart, rangeEnd];
+            let topCategoryFilter = '';
+            if (uniqueCategories.length > 0) {
+              topCategoryFilter = `AND p.category = ANY($3)`;
+              topParams.push(uniqueCategories);
+            }
+            return pool.query(`
+              SELECT p.id, p.name, p.category, p.stock_quantity, p.units_per_pack, p.unit_label, SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue
+              FROM sale_items si
+              JOIN sales s ON s.id = si.sale_id AND s.status='completed'
+              JOIN products p ON p.id = si.product_id
+              WHERE s.created_at >= $1 AND s.created_at < $2 ${topCategoryFilter}
+              GROUP BY p.id, p.name, p.category, p.stock_quantity, p.units_per_pack, p.unit_label
+              ORDER BY qty_sold DESC
+            `, topParams);
+          })(),
+    ]);
     res.json({
       granularity: gran,
       trend: trend.rows.map(r => ({ period: r.period instanceof Date ? r.period.toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' }) : String(r.period).slice(0, 10), qty_sold: Number(r.qty_sold), revenue: Number(r.revenue), transactions: Number(r.transactions) })),
@@ -2166,49 +2195,51 @@ app.get('/api/reports/expenses', requireAuth, requireRole('owner'), async (req, 
   const { start: prevRangeStart, end: prevRangeEnd } = manilaRangeBounds(prevStart, prevEnd);
 
   try {
-    const current = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
-      [rangeStart, rangeEnd]
-    );
-    const previous = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
-      [prevRangeStart, prevRangeEnd]
-    );
-    const cashCurrent = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND (payment_method='cash' OR payment_method IS NULL)`,
-      [rangeStart, rangeEnd]
-    );
-    const gcashCurrent = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND payment_method='gcash'`,
-      [rangeStart, rangeEnd]
-    );
-    const cashPrev = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND (payment_method='cash' OR payment_method IS NULL)`,
-      [prevRangeStart, prevRangeEnd]
-    );
-    const gcashPrev = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND payment_method='gcash'`,
-      [prevRangeStart, prevRangeEnd]
-    );
-    const byCategory = await pool.query(
-      `SELECT category, SUM(amount) AS total FROM expenses
-       WHERE created_at >= $1 AND created_at < $2
-       GROUP BY category ORDER BY total DESC`,
-      [rangeStart, rangeEnd]
-    );
-    const byPayment = await pool.query(
-      `SELECT COALESCE(payment_method,'cash') AS payment_method, SUM(amount) AS total FROM expenses
-       WHERE created_at >= $1 AND created_at < $2
-       GROUP BY payment_method`,
-      [rangeStart, rangeEnd]
-    );
-    const recent = await pool.query(
-      `SELECT e.*, u.name AS created_by_name
-       FROM expenses e LEFT JOIN users u ON u.id = e.created_by
-       WHERE e.created_at >= $1 AND e.created_at < $2
-       ORDER BY e.created_at DESC LIMIT 20`,
-      [rangeStart, rangeEnd]
-    );
+    const [current, previous, cashCurrent, gcashCurrent, cashPrev, gcashPrev, byCategory, byPayment, recent] = await Promise.all([
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2`,
+        [prevRangeStart, prevRangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND (payment_method='cash' OR payment_method IS NULL)`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND payment_method='gcash'`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND (payment_method='cash' OR payment_method IS NULL)`,
+        [prevRangeStart, prevRangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE created_at >= $1 AND created_at < $2 AND payment_method='gcash'`,
+        [prevRangeStart, prevRangeEnd]
+      ),
+      pool.query(
+        `SELECT category, SUM(amount) AS total FROM expenses
+         WHERE created_at >= $1 AND created_at < $2
+         GROUP BY category ORDER BY total DESC`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(payment_method,'cash') AS payment_method, SUM(amount) AS total FROM expenses
+         WHERE created_at >= $1 AND created_at < $2
+         GROUP BY payment_method`,
+        [rangeStart, rangeEnd]
+      ),
+      pool.query(
+        `SELECT e.*, u.name AS created_by_name
+         FROM expenses e LEFT JOIN users u ON u.id = e.created_by
+         WHERE e.created_at >= $1 AND e.created_at < $2
+         ORDER BY e.created_at DESC LIMIT 20`,
+        [rangeStart, rangeEnd]
+      ),
+    ]);
 
     res.json({
       total_expenses: Number(current.rows[0].total),
@@ -2776,79 +2807,133 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
     await freezeStaleShifts();
 
     const today = manilaToday();
-    const todayResult = await pool.query(
-      `SELECT cs.*, u.name AS opened_by_name FROM cash_shifts cs
-       LEFT JOIN users u ON u.id = cs.opened_by WHERE shift_date = $1`,
-      [today]
-    );
+    const { start, end: todayEnd } = manilaDayBounds(today);
+
+    // Wave 0: maintenance tasks first (they touch today's row and stale
+    // rows, so everything else waits for them).
+    await Promise.all([ensureTodayShift(), freezeStaleShifts()]);
+
+    // Wave 1: today's row / drawer reset / pending list run together.
+    const [todayResult, resetAt, pending] = await Promise.all([
+      pool.query(
+        `SELECT cs.*, u.name AS opened_by_name FROM cash_shifts cs
+         LEFT JOIN users u ON u.id = cs.opened_by WHERE shift_date = $1`,
+        [today]
+      ),
+      getDrawerResetAt(),
+      pool.query(
+        `SELECT cs.*, u.name AS opened_by_name FROM cash_shifts cs
+         LEFT JOIN users u ON u.id = cs.opened_by
+         WHERE status = 'pending_count' ORDER BY shift_date ASC`
+      ),
+    ]);
     const shift = todayResult.rows[0];
+    const todayStart = start;
     // Reset is date-level for sales (today's sales from 00:00 still count),
     // but expenses before the reset moment are ignored (e.g. a manual
     // "zeroing" entry stays in history without deducting from the drawer).
-    const resetAt = await getDrawerResetAt();
-    const { start } = manilaDayBounds(today);
     const expenseStart = resetAt && resetAt > start ? resetAt : start;
-    const running = await computeExpectedCash(shift.opening_cash || 0, start, new Date(), pool, expenseStart);
 
-    const pending = await pool.query(
-      `SELECT cs.*, u.name AS opened_by_name FROM cash_shifts cs
-       LEFT JOIN users u ON u.id = cs.opened_by
-       WHERE status = 'pending_count' ORDER BY shift_date ASC`
-    );
+    // Wave 2: every aggregate below only needs `resetAt` / today bounds, so
+    // they all fire in a single parallel batch instead of 20+ roundtrips in a row.
+    const [running, closedCashSales, closedGcashSales, closedCashPayments, closedGcashPayments,
+      closedCashExpenses, closedGcashExpenses, closedCashWithdrawals, closedGcashWithdrawals,
+      closedActualRes, todayProfitRes, takenTodayCashRes, takenTodayGcashRes,
+      totalGrossProfitRes, totalTakenRes, recentWithdrawals] = await Promise.all([
+      computeExpectedCash(shift.opening_cash || 0, start, new Date(), pool, expenseStart),
 
-    // Closed totals: all sales from yesterday and so on (only days already counted as closed)
-    // Don't include today's active sales until counted.
-    // After a reset there are no closed rows, so old history is ignored while
-    // today's sales/expenses from 00:00 still count via `running` above.
-    const closedCashSales = await pool.query(`
-      SELECT COALESCE(SUM(CASE WHEN s.payment_method='cash' THEN s.total_amount WHEN s.payment_method='split' THEN s.amount_tendered ELSE 0 END),0) AS total
-      FROM sales s
-      WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-    `);
-    const closedGcashSales = await pool.query(`
-      SELECT COALESCE(SUM(CASE WHEN s.payment_method='gcash' THEN s.total_amount WHEN s.payment_method='split' THEN COALESCE(s.gcash_amount,0) ELSE 0 END),0) AS total FROM sales s
-      WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-    `);
-    const closedCashPayments = await pool.query(`
-      SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
-      WHERE type='payment' AND payment_method='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-    `);
-    const closedGcashPayments = await pool.query(`
-      SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
-      WHERE type='payment' AND payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-    `);
-    const closedCashExpenses = await pool.query(`
-      SELECT COALESCE(SUM(amount),0) AS total FROM expenses
-      WHERE (payment_method='cash' OR payment_method IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR created_at >= $1)
-    `, [resetAt]);
-    const closedGcashExpenses = await pool.query(`
-      SELECT COALESCE(SUM(amount),0) AS total FROM expenses
-      WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR created_at >= $1)
-    `, [resetAt]);
-    // Profit withdrawals behave like expenses for the drawer (deduct cash),
-    // but live in their own table so profit reports stay correct.
-    const closedCashWithdrawals = await pool.query(`
-      SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
-      WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR created_at >= $1)
-    `, [resetAt]);
-    const closedGcashWithdrawals = await pool.query(`
-      SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
-      WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
-        AND ($1::timestamptz IS NULL OR created_at >= $1)
-    `, [resetAt]);
-    // KPI accumulates every counted actual: each morning the user counts the
-    // drawer and takes it to their wallet, so total = SUM of all closing_cash.
-    // opening_cash is always 0 now, so SUM(closing - opening) == SUM(closing)
-    // while staying compatible with legacy carried-over rows.
-    const closedActualRes = await pool.query(`
-      SELECT COUNT(*) AS closed_days,
-             COALESCE(SUM(closing_cash - COALESCE(opening_cash, 0)), 0) AS cumulative_net,
-             MAX(closed_at) AS last_closed_at
-      FROM cash_shifts WHERE status='closed' AND closing_cash IS NOT NULL
-    `);
+      // Closed totals: all sales from yesterday and so on (only days already counted as closed)
+      // Don't include today's active sales until counted.
+      // After a reset there are no closed rows, so old history is ignored while
+      // today's sales/expenses from 00:00 still count via `running` above.
+      pool.query(`
+        SELECT COALESCE(SUM(CASE WHEN s.payment_method='cash' THEN s.total_amount WHEN s.payment_method='split' THEN s.amount_tendered ELSE 0 END),0) AS total
+        FROM sales s
+        WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+      `),
+      pool.query(`
+        SELECT COALESCE(SUM(CASE WHEN s.payment_method='gcash' THEN s.total_amount WHEN s.payment_method='split' THEN COALESCE(s.gcash_amount,0) ELSE 0 END),0) AS total FROM sales s
+        WHERE s.status='completed' AND (s.created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+      `),
+      pool.query(`
+        SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
+        WHERE type='payment' AND payment_method='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+      `),
+      pool.query(`
+        SELECT COALESCE(SUM(amount),0) AS total FROM utang_transactions
+        WHERE type='payment' AND payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+      `),
+      pool.query(`
+        SELECT COALESCE(SUM(amount),0) AS total FROM expenses
+        WHERE (payment_method='cash' OR payment_method IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+          AND ($1::timestamptz IS NULL OR created_at >= $1)
+      `, [resetAt]),
+      pool.query(`
+        SELECT COALESCE(SUM(amount),0) AS total FROM expenses
+        WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+          AND ($1::timestamptz IS NULL OR created_at >= $1)
+      `, [resetAt]),
+      // Profit withdrawals behave like expenses for the drawer (deduct cash),
+      // but live in their own table so profit reports stay correct.
+      pool.query(`
+        SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
+        WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+          AND ($1::timestamptz IS NULL OR created_at >= $1)
+      `, [resetAt]),
+      pool.query(`
+        SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
+        WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date IN (SELECT shift_date FROM cash_shifts WHERE status='closed')
+          AND ($1::timestamptz IS NULL OR created_at >= $1)
+      `, [resetAt]),
+      // KPI accumulates every counted actual: each morning the user counts the
+      // drawer and takes it to their wallet, so total = SUM of all closing_cash.
+      // opening_cash is always 0 now, so SUM(closing - opening) == SUM(closing)
+      // while staying compatible with legacy carried-over rows.
+      pool.query(`
+        SELECT COUNT(*) AS closed_days,
+               COALESCE(SUM(closing_cash - COALESCE(opening_cash, 0)), 0) AS cumulative_net,
+               MAX(closed_at) AS last_closed_at
+        FROM cash_shifts WHERE status='closed' AND closing_cash IS NOT NULL
+      `),
+      // Today's gross profit (all completed sales today, Manila time).
+      pool.query(
+        `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
+         FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         JOIN products p ON p.id = si.product_id
+         WHERE s.created_at >= $1 AND s.created_at < $2`,
+        [todayStart, todayEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
+         WHERE (source_wallet='cash' OR source_wallet IS NULL) AND created_at >= $1 AND created_at < $2`,
+        [todayStart, todayEnd]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
+         WHERE source_wallet='gcash' AND created_at >= $1 AND created_at < $2`,
+        [todayStart, todayEnd]
+      ),
+      // Available-basis is CUMULATIVE, not day-scoped: the owner takes profit
+      // home the next morning, so "today's profit - taken today" breaks when
+      // the take-home belongs to yesterday's profit (today's Available would
+      // be zeroed by a take-home recorded after last night's sales). Cumulative
+      // earned vs cumulative taken is timing-independent.
+      pool.query(
+        `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
+         FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
+         JOIN products p ON p.id = si.product_id`
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals`
+      ),
+      pool.query(
+        `SELECT w.*, u.name AS created_by_name FROM profit_withdrawals w
+         LEFT JOIN users u ON u.id = w.created_by
+         ORDER BY w.created_at DESC LIMIT 10`
+      ),
+    ]);
     const closedDays = Number(closedActualRes.rows[0].closed_days || 0);
     const hasClosedActual = closedDays > 0;
     let closedTotalCash = hasClosedActual ? Number(closedActualRes.rows[0].cumulative_net) : (Number(closedCashSales.rows[0].total) + Number(closedCashPayments.rows[0].total) - Number(closedCashExpenses.rows[0].total) - Number(closedCashWithdrawals.rows[0].total));
@@ -2863,50 +2948,53 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       const lastClosedAt = closedActualRes.rows[0].last_closed_at;
       const lastClosedDateStr = new Date(lastClosedAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
       const isTodayClosed = lastClosedDateStr === today;
-      // Cash: deduct ALL post expenses (latest closing is actual, not sum, so remainder + today all deduct)
-      const postCashExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE (payment_method='cash' OR payment_method IS NULL) AND created_at > $1`, [lastClosedAt]);
+      // All post-last-count adjustments only need lastClosedAt — fetch in one wave.
+      const [postCashExp, postGcashExp, postCashWd, postGcashWd, postCashTransfersOut, postCashTransfersIn, postGcashTransfersOut, postGcashTransfersIn] = await Promise.all([
+        // Cash: deduct ALL post expenses (latest closing is actual, not sum, so remainder + today all deduct)
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE (payment_method='cash' OR payment_method IS NULL) AND created_at > $1`, [lastClosedAt]),
+        // GCash: same as cash — deduct ALL post GCash expenses after last count
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND created_at > $1`, [lastClosedAt]),
+        // Profit withdrawals after the last count: deduct like expenses.
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND created_at > $1`, [lastClosedAt]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND created_at > $1`, [lastClosedAt]),
+        // Money transfers: affect counted totals (previous sale)
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND created_at > $1`, [lastClosedAt]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND created_at > $1`, [lastClosedAt]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='gcash' AND created_at > $1`, [lastClosedAt]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='gcash' AND created_at > $1`, [lastClosedAt]),
+      ]);
       const postCash = Number(postCashExp.rows[0].total);
+      const postGcash = Number(postGcashExp.rows[0].total);
+      const postCashWdTotal = Number(postCashWd.rows[0].total);
+      const postGcashWdTotal = Number(postGcashWd.rows[0].total);
+      // The "today-only" breakdown queries are conditional — but they only
+      // depend on what we just fetched, so gather the needed ones together.
+      const needToday = !isTodayClosed && (postCash || postGcash || postCashWdTotal || postGcashWdTotal);
+      const [postCashTodayExp, postGcashTodayExp, postCashWdToday, postGcashWdToday] = needToday
+        ? await Promise.all([
+            pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE (payment_method='cash' OR payment_method IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]),
+            pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]),
+            pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]),
+            pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]),
+          ])
+        : [{ rows: [{ total: 0 }] }, { rows: [{ total: 0 }] }, { rows: [{ total: 0 }] }, { rows: [{ total: 0 }] }];
+
       if (postCash) {
         closedTotalCash -= postCash;
-        if (!isTodayClosed) {
-          const postCashTodayExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE (payment_method='cash' OR payment_method IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
-          closedCashExpDisplay += Number(postCashTodayExp.rows[0].total);
-        }
+        if (!isTodayClosed) closedCashExpDisplay += Number(postCashTodayExp.rows[0].total);
       }
-      // GCash: same as cash — deduct ALL post GCash expenses after last count
-      const postGcashExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND created_at > $1`, [lastClosedAt]);
-      const postGcash = Number(postGcashExp.rows[0].total);
       if (postGcash) {
         closedTotalGcash -= postGcash;
-        if (!isTodayClosed) {
-          const postGcashTodayExp = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE payment_method='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
-          closedGcashExpDisplay += Number(postGcashTodayExp.rows[0].total);
-        }
+        if (!isTodayClosed) closedGcashExpDisplay += Number(postGcashTodayExp.rows[0].total);
       }
-      // Profit withdrawals after the last count: deduct like expenses.
-      const postCashWd = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND created_at > $1`, [lastClosedAt]);
-      const postCashWdTotal = Number(postCashWd.rows[0].total);
       if (postCashWdTotal) {
         closedTotalCash -= postCashWdTotal;
-        if (!isTodayClosed) {
-          const postCashWdToday = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
-          closedCashWdDisplay += Number(postCashWdToday.rows[0].total);
-        }
+        if (!isTodayClosed) closedCashWdDisplay += Number(postCashWdToday.rows[0].total);
       }
-      const postGcashWd = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND created_at > $1`, [lastClosedAt]);
-      const postGcashWdTotal = Number(postGcashWd.rows[0].total);
       if (postGcashWdTotal) {
         closedTotalGcash -= postGcashWdTotal;
-        if (!isTodayClosed) {
-          const postGcashWdToday = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1 AND created_at > $2`, [today, lastClosedAt]);
-          closedGcashWdDisplay += Number(postGcashWdToday.rows[0].total);
-        }
+        if (!isTodayClosed) closedGcashWdDisplay += Number(postGcashWdToday.rows[0].total);
       }
-      // Money transfers: affect counted totals (previous sale)
-      const postCashTransfersOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND created_at > $1`, [lastClosedAt]);
-      const postCashTransfersIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND created_at > $1`, [lastClosedAt]);
-      const postGcashTransfersOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='gcash' AND created_at > $1`, [lastClosedAt]);
-      const postGcashTransfersIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='gcash' AND created_at > $1`, [lastClosedAt]);
       const netCashTransfer = Number(postCashTransfersIn.rows[0].total) - Number(postCashTransfersOut.rows[0].total);
       const netGcashTransfer = Number(postGcashTransfersIn.rows[0].total) - Number(postGcashTransfersOut.rows[0].total);
       closedTotalCash += netCashTransfer;
@@ -2917,64 +3005,26 @@ app.get('/api/shift/current', requireAuth, async (req, res) => {
       const todayGcashExp = Number(running.gcash_expenses ?? 0);
       if (todayCashExp) { closedTotalCash -= todayCashExp; closedCashExpDisplay += todayCashExp; }
       if (todayGcashExp) { closedTotalGcash -= todayGcashExp; closedGcashExpDisplay += todayGcashExp; }
-      // Also deduct today's profit withdrawals even with no counted day
-      const todayCashWd = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
-      const todayGcashWd = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
+      // Today's withdrawals + transfers only need the date — one parallel wave.
+      const [todayCashWd, todayGcashWd, todayCashTransOut, todayCashTransIn, todayGcashTransOut, todayGcashTransIn] = await Promise.all([
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE (source_wallet='cash' OR source_wallet IS NULL) AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals WHERE source_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]),
+      ]);
       if (Number(todayCashWd.rows[0].total)) { closedTotalCash -= Number(todayCashWd.rows[0].total); closedCashWdDisplay += Number(todayCashWd.rows[0].total); }
       if (Number(todayGcashWd.rows[0].total)) { closedTotalGcash -= Number(todayGcashWd.rows[0].total); closedGcashWdDisplay += Number(todayGcashWd.rows[0].total); }
-      // Also apply today's transfers even with no counted day
-      const todayCashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
-      const todayCashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='cash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
-      const todayGcashTransOut = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE from_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
-      const todayGcashTransIn = await pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM money_transfers WHERE to_wallet='gcash' AND (created_at AT TIME ZONE 'Asia/Manila')::date = $1`, [today]);
       closedTotalCash += Number(todayCashTransIn.rows[0].total) - Number(todayCashTransOut.rows[0].total);
       closedTotalGcash += Number(todayGcashTransIn.rows[0].total) - Number(todayGcashTransOut.rows[0].total);
     }
 
-    // Today's gross profit (all completed sales today, Manila time).
-    const { start: todayStart, end: todayEnd } = manilaDayBounds(today);
-    const todayProfitRes = await pool.query(
-      `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
-       FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-       JOIN products p ON p.id = si.product_id
-       WHERE s.created_at >= $1 AND s.created_at < $2`,
-      [todayStart, todayEnd]
-    );
     const todayGrossProfit = Number(todayProfitRes.rows[0].gross_profit);
-    const takenTodayCashRes = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
-       WHERE (source_wallet='cash' OR source_wallet IS NULL) AND created_at >= $1 AND created_at < $2`,
-      [todayStart, todayEnd]
-    );
-    const takenTodayGcashRes = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals
-       WHERE source_wallet='gcash' AND created_at >= $1 AND created_at < $2`,
-      [todayStart, todayEnd]
-    );
     const takenTodayCash = Number(takenTodayCashRes.rows[0].total);
     const takenTodayGcash = Number(takenTodayGcashRes.rows[0].total);
-    // Available-basis is CUMULATIVE, not day-scoped: the owner takes profit
-    // home the next morning, so "today's profit - taken today" breaks when
-    // the take-home belongs to yesterday's profit (today's Available would
-    // be zeroed by a take-home recorded after last night's sales). Cumulative
-    // earned vs cumulative taken is timing-independent.
-    const totalGrossProfitRes = await pool.query(
-      `SELECT COALESCE(SUM((si.unit_price - COALESCE(si.cost_price, p.cost_price)) * si.quantity),0) AS gross_profit
-       FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
-       JOIN products p ON p.id = si.product_id`
-    );
     const totalGrossProfit = Number(totalGrossProfitRes.rows[0].gross_profit);
-    const totalTakenRes = await pool.query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM profit_withdrawals`
-    );
     const totalTaken = Number(totalTakenRes.rows[0].total);
-    const recentWithdrawals = await pool.query(
-      `SELECT w.*, u.name AS created_by_name FROM profit_withdrawals w
-       LEFT JOIN users u ON u.id = w.created_by
-       ORDER BY w.created_at DESC LIMIT 10`
-    );
 
     const closed = {
       cash_sales: Number(closedCashSales.rows[0].total),
