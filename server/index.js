@@ -308,9 +308,25 @@ function previousPeriod(start, end) {
   };
 }
 
-// Sanity-check route
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Tindahan Ko server is running' });
+// Sanity-check route + live database connectivity report. The DB check makes
+// outages obvious at a glance: db="ok" with a fast db_ms, or the exact error.
+app.get('/api/health', async (req, res) => {
+  const t = Date.now();
+  let db = 'ok';
+  let dbError = null;
+  try {
+    await pool.query('SELECT 1');
+  } catch (err) {
+    db = 'error';
+    dbError = err.message;
+  }
+  res.json({
+    status: 'ok',
+    message: 'Tindahan Ko server is running',
+    db,
+    db_ms: Date.now() - t,
+    ...(dbError ? { db_error: dbError } : {}),
+  });
 });
 
 app.post('/api/auth/login', async (req, res) => {
