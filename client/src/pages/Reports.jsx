@@ -116,8 +116,10 @@ async function exportForecastPdf(items, meta, start, end, category) {
 
     autoTable(doc, {
       startY: y,
-      head: [['Product', 'Stock', `Sold (${start} to ${end})`, 'Avg/Wk', 'Forecast', 'To Buy']],
+      head: [['Buy', 'Product', 'Stock', `Sold (${start} to ${end})`, 'Avg/Wk', 'Forecast', 'To Buy']],
       body: list.map((p) => [
+        // Empty string = row to buy (gets a drawn checkbox); null = nothing to buy
+        p.buy_label && p.buy_label !== '—' ? '' : null,
         p.name,
         String(p.stock_quantity ?? 0),
         `${Number(p.qty_sold || 0)} sold`,
@@ -125,9 +127,24 @@ async function exportForecastPdf(items, meta, start, end, category) {
         p.forecast_qty ?? '—',
         p.buy_label ?? '—',
       ]),
+      columnStyles: { 0: { cellWidth: 12 } },
       styles: { fontSize: 9, cellPadding: 2 },
       headStyles: { fillColor: [37, 99, 235] },
       margin: { left: 14, right: 14 },
+      didDrawCell: (data) => {
+        // Draw an empty checkbox square for every row that has something to buy
+        if (data.section === 'body' && data.column.index === 0 && data.cell.raw === '') {
+          const size = 7;
+          doc.setDrawColor(60);
+          doc.setLineWidth(0.5);
+          doc.rect(
+            data.cell.x + (data.cell.width - size) / 2,
+            data.cell.y + (data.cell.height - size) / 2,
+            size,
+            size
+          );
+        }
+      },
     });
     y = doc.lastAutoTable.finalY + 10;
   });
