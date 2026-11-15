@@ -132,17 +132,21 @@ async function exportForecastPdf(items, meta, start, end, category) {
       headStyles: { fillColor: [37, 99, 235] },
       margin: { left: 14, right: 14 },
       didDrawCell: (data) => {
-        // Draw an empty checkbox square for every row that has something to buy
+        // Interactive checkbox (AcroForm) for every row that has something to
+        // buy. Clicking toggles a ✓ in PDF viewers that support forms.
         if (data.section === 'body' && data.column.index === 0 && data.cell.raw === '') {
-          const size = 7;
-          doc.setDrawColor(60);
-          doc.setLineWidth(0.5);
-          doc.rect(
-            data.cell.x + (data.cell.width - size) / 2,
-            data.cell.y + (data.cell.height - size) / 2,
-            size,
-            size
-          );
+          const size = 8;
+          const cb = new doc.AcroFormCheckBox();
+          // Unique field name per row so boxes don't toggle each other
+          cb.fieldName = `buy_${cat}_${data.row.index}`;
+          // jsPDF defaults to "On" (pre-checked) — start unchecked
+          cb.value = 'Off';
+          cb.appearanceState = 'Off';
+          cb.x = data.cell.x + (data.cell.width - size) / 2;
+          cb.y = data.cell.y + (data.cell.height - size) / 2;
+          cb.width = size;
+          cb.height = size;
+          doc.addField(cb);
         }
       },
     });
