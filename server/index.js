@@ -288,6 +288,21 @@ async function ensureDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+    // Combo / prepared products (e.g. brewed coffee = Kopiko sachet + Styro cup).
+    // A product with rows here is a "combo": it sells as one line on the receipt,
+    // but completing the sale deducts each component's stock instead of the
+    // combo row's own stock_quantity (which stays unused).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS product_components (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        component_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        quantity NUMERIC NOT NULL DEFAULT 1,
+        UNIQUE (product_id, component_id)
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_product_components_product ON product_components (product_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_product_components_component ON product_components (component_id)`);
   } catch (e) {
     console.error('ensureDB error', e.message);
   }
@@ -470,6 +485,115 @@ app.delete('/api/users/:id', requireAuth, requireRole('owner'), async (req, res)
 });
 
 // Real database-backed route
+// ---------------------------------------------------------------------------
+// Combo / prepared products (e.g. a brewed coffee sold in a Styro cup).
+// A combo is a regular product row plus 1+ rows in product_components. It
+// prints as one line on the receipt, but a sale deducts the components'
+// stock (the combo row's own stock_quantity is never used).
+// ---------------------------------------------------------------------------
+
+// Attaches `components: [...]` to every product row ([] = regular product).
+async function withComponents(rows, client = pool) {
+  if (rows.length === 0) return rows;
+  const comps = await client.query(
+    `SELECT pc.product_id, pc.component_id, pc.quantity,
+            p.name, p.stock_quantity, p.cost_price
+     FROM product_components pc
+     JOIN products p ON p.id = pc.component_id
+     WHERE pc.product_id = ANY($1)
+     ORDER BY pc.id`,
+    [rows.map((r) => r.id)]
+  );
+  const byProduct = new Map();
+  for (const c of comps.rows) {
+    if (!byProduct.has(c.product_id)) byProduct.set(c.product_id, []);
+    byProduct.get(c.product_id).push({
+      product_id: c.component_id,
+      name: c.name,
+      quantity: Number(c.quantity),
+      stock_quantity: Number(c.stock_quantity),
+      cost_price: Number(c.cost_price || 0),
+    });
+  }
+  return rows.map((r) => ({ ...r, components: byProduct.get(r.id) || [] }));
+}
+
+// Normalizes + validates the client's component list. Returns:
+//   undefined -> field not sent (leave existing components untouched)
+//   []        -> product is NOT a combo (removes any existing components)
+//   [...]     -> the cleaned [{ product_id, quantity }] list
+// Throws user-facing Error messages for any rule a combo breaks.
+async function prepareComponents(client, productId, productName, components) {
+  if (components === undefined) return undefined;
+  if (!Array.isArray(components)) throw new Error('Components must be a list');
+  const seen = new Map();
+  for (const c of components) {
+    const id = Number(c && c.product_id);
+    const qty = Number(c && c.quantity);
+    if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid combo component');
+    if (productId && id === Number(productId)) throw new Error('A product cannot be its own component');
+    if (!Number.isFinite(qty) || qty <= 0) {
+      throw new Error(`Each component of ${productName} needs a quantity of at least 1`);
+    }
+    if (!seen.has(id)) seen.set(id, qty); // dedupe repeated picks
+  }
+  const cleaned = [...seen.entries()].map(([product_id, quantity]) => ({ product_id, quantity }));
+  if (cleaned.length === 0) return [];
+  const ids = cleaned.map((c) => c.product_id);
+  // Recipes are one level deep only — a combo inside a combo would leave the
+  // inner components' stock untouched (we'd only deduct the inner combo row).
+  const nested = await client.query(
+    `SELECT DISTINCT p.name FROM product_components pc JOIN products p ON p.id = pc.product_id
+     WHERE pc.product_id = ANY($1)`,
+    [ids]
+  );
+  if (nested.rows.length > 0) {
+    throw new Error(
+      `Cannot use ${nested.rows.map((r) => r.name).join(', ')} — a combo cannot contain another combo`
+    );
+  }
+  // This product must not already be an ingredient of a *different* combo,
+  // otherwise its stock would stop being deducted for that combo's sales.
+  if (productId) {
+    const used = await client.query(
+      `SELECT p.name FROM product_components pc JOIN products p ON p.id = pc.product_id
+       WHERE pc.component_id = $1`,
+      [productId]
+    );
+    if (used.rows.length > 0) {
+      throw new Error(`Cannot make ${productName} a combo — it is used inside ${used.rows[0].name}`);
+    }
+  }
+  return cleaned;
+}
+
+// Cost of one combo unit = Σ (component cost × qty), pulled live so the combo
+// row itself never needs a maintained cost_price for profit reports to work.
+// Reads from the products table (the cleaned recipe), not from stored rows —
+// the recipe being saved may not be persisted yet.
+async function componentsCost(client, cleaned) {
+  if (cleaned.length === 0) return 0;
+  const r = await client.query(
+    `SELECT id, cost_price FROM products WHERE id = ANY($1)`,
+    [cleaned.map((c) => c.product_id)]
+  );
+  const costById = new Map(r.rows.map((row) => [Number(row.id), Number(row.cost_price || 0)]));
+  return cleaned.reduce(
+    (sum, c) => sum + (costById.get(Number(c.product_id)) || 0) * Number(c.quantity),
+    0
+  );
+}
+
+async function replaceComponents(client, productId, cleaned) {
+  await client.query('DELETE FROM product_components WHERE product_id = $1', [productId]);
+  for (const c of cleaned) {
+    await client.query(
+      `INSERT INTO product_components (product_id, component_id, quantity) VALUES ($1, $2, $3)`,
+      [productId, c.product_id, c.quantity]
+    );
+  }
+}
+
 app.get('/api/products', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -483,7 +607,7 @@ app.get('/api/products', requireAuth, async (req, res) => {
       ) sold ON sold.product_id = p.id
       ORDER BY p.id
     `);
-    res.json(result.rows);
+    res.json(await withComponents(result.rows));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch products' });
@@ -569,22 +693,35 @@ app.get('/api/products/:id/associations', requireAuth, async (req, res) => {
 });
 
 app.post('/api/products', requireAuth, requireRole('owner'), async (req, res) => {
-  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
+  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, components } = req.body;
   const cleanSku = sku && sku.trim() !== '' ? sku.trim() : null;
   if (!name || selling_price === undefined) {
     return res.status(400).json({ error: 'Name and selling price are required' });
   }
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    const cleaned = await prepareComponents(pool, null, name, Array.isArray(components) ? components : []);
+    await client.query('BEGIN');
+    // Combos get their cost from the recipe so profit math stays correct even
+    // if the form sends something else.
+    const effectiveCost = cleaned.length > 0 ? await componentsCost(client, cleaned) : (cost_price || 0);
+    const result = await client.query(
       `INSERT INTO products (name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [name, cleanSku, category, cost_price || 0, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier, units_per_pack || null, unit_label || null]
+      [name, cleanSku, category, effectiveCost, selling_price, stock_quantity || 0, low_stock_threshold || 10, supplier, units_per_pack || null, unit_label || null]
     );
-    res.status(201).json(result.rows[0]);
+    if (cleaned.length > 0) await replaceComponents(client, result.rows[0].id, cleaned);
+    await client.query('COMMIT');
+    const [product] = await withComponents(result.rows, pool);
+    res.status(201).json(product);
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error(err);
+    if (err.message && !err.code) return res.status(400).json({ error: err.message });
     res.status(500).json({ error: 'Failed to create product' });
+  } finally {
+    client.release();
   }
 });
 
@@ -595,7 +732,8 @@ app.get('/api/products/:id', requireAuth, async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
-    res.json(result.rows[0]);
+    const [product] = await withComponents(result.rows, pool);
+    res.json(product);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch product' });
@@ -604,28 +742,57 @@ app.get('/api/products/:id', requireAuth, async (req, res) => {
 
 // Update a product
 app.put('/api/products/:id', requireAuth, requireRole('owner'), async (req, res) => {
-  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label } = req.body;
+  const { name, sku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, components } = req.body;
   const cleanSku = sku && sku.trim() !== '' ? sku.trim() : null;
+  const productId = Number(req.params.id);
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    // undefined components = caller didn't touch the recipe; keep existing rows.
+    const cleaned = await prepareComponents(pool, productId, name, components);
+    await client.query('BEGIN');
+    const effectiveCost = cleaned && cleaned.length > 0
+      ? await componentsCost(client, cleaned)
+      : cost_price;
+    const result = await client.query(
       `UPDATE products
-       SET name = $1, sku = $2, category = $3, cost_price = $4, selling_price = $5,
-           stock_quantity = $6, low_stock_threshold = $7, supplier = $8, units_per_pack = $9, unit_label = $10
+       SET name = $1, sku = $2, category = $3,
+           cost_price = COALESCE($4, cost_price, 0), selling_price = $5,
+           stock_quantity = COALESCE($6, stock_quantity), low_stock_threshold = $7, supplier = $8, units_per_pack = $9, unit_label = $10
        WHERE id = $11
        RETURNING *`,
-      [name, cleanSku, category, cost_price, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, req.params.id]
+      [name, cleanSku, category, effectiveCost, selling_price, stock_quantity, low_stock_threshold, supplier, units_per_pack, unit_label, productId]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
-    res.json(result.rows[0]);
+    if (result.rows.length === 0) throw new Error('Product not found');
+    if (cleaned) await replaceComponents(client, productId, cleaned);
+    await client.query('COMMIT');
+    const [product] = await withComponents(result.rows, pool);
+    res.json(product);
   } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.message === 'Product not found') return res.status(404).json({ error: err.message });
+    if (err.message && !err.code) return res.status(400).json({ error: err.message });
     console.error(err);
     res.status(500).json({ error: 'Failed to update product' });
+  } finally {
+    client.release();
   }
 });
 
 // Delete a product
 app.delete('/api/products/:id', requireAuth, requireRole('owner'), async (req, res) => {
   try {
+    // Block deleting a combo's ingredient — the recipe would silently stop
+    // deducting it on every future sale.
+    const used = await pool.query(
+      `SELECT p.name FROM product_components pc JOIN products p ON p.id = pc.product_id
+       WHERE pc.component_id = $1`,
+      [req.params.id]
+    );
+    if (used.rows.length > 0) {
+      return res.status(409).json({
+        error: `Cannot delete — this product is an ingredient of ${used.rows[0].name}. Remove it from that combo first.`,
+      });
+    }
     const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING *', [req.params.id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
@@ -768,12 +935,29 @@ app.post('/api/sales', requireAuth, async (req, res) => {
     const itemSubtotal = item.quantity * effectiveUnitPrice;
 
     // Snapshot current cost so future restocks don't rewrite this sale's profit.
-    const costRow = await client.query(
-      `SELECT cost_price FROM products WHERE id = $1`,
+    const prodResult = await client.query(
+      `SELECT name, cost_price FROM products WHERE id = $1`,
       [item.product_id]
     );
-    if (costRow.rows.length === 0) throw new Error(`Product ${item.product_id} not found`);
-    const costAtSale = Number(costRow.rows[0].cost_price || 0);
+    if (prodResult.rows.length === 0) throw new Error(`Product ${item.product_id} not found`);
+    const productName = prodResult.rows[0].name;
+
+    // Combo / prepared products (e.g. brewed coffee in a Styro cup) have
+    // components: the receipt keeps one line, but stock moves on each
+    // component instead of the combo row (whose own stock is never used).
+    const compResult = await client.query(
+      `SELECT pc.component_id, pc.quantity, p.name, p.cost_price
+       FROM product_components pc
+       JOIN products p ON p.id = pc.component_id
+       WHERE pc.product_id = $1
+       ORDER BY pc.id`,
+      [item.product_id]
+    );
+    const comps = compResult.rows;
+
+    const costAtSale = comps.length > 0
+      ? comps.reduce((sum, c) => sum + Number(c.quantity) * Number(c.cost_price || 0), 0)
+      : Number(prodResult.rows[0].cost_price || 0);
 
     await client.query(
       `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal, cost_price)
@@ -781,14 +965,32 @@ app.post('/api/sales', requireAuth, async (req, res) => {
       [sale.id, item.product_id, item.quantity, effectiveUnitPrice, itemSubtotal, costAtSale]
     );
 
-      const stockResult = await client.query(
-        `UPDATE products SET stock_quantity = stock_quantity - $1
-         WHERE id = $2 AND stock_quantity >= $1
-         RETURNING stock_quantity`,
-        [item.quantity, item.product_id]
-      );
-      if (stockResult.rows.length === 0) {
-        throw new Error(`Not enough stock for product ${item.product_id}`);
+      if (comps.length > 0) {
+        // Deduct the recipe: quantity sold × units per combo, all-or-nothing.
+        for (const c of comps) {
+          const needed = Number(c.quantity) * Number(item.quantity);
+          const stockResult = await client.query(
+            `UPDATE products SET stock_quantity = stock_quantity - $1
+             WHERE id = $2 AND stock_quantity >= $1
+             RETURNING stock_quantity`,
+            [needed, c.component_id]
+          );
+          if (stockResult.rows.length === 0) {
+            throw new Error(
+              `Not enough stock for ${c.name} — ${needed} needed for "${productName}"`
+            );
+          }
+        }
+      } else {
+        const stockResult = await client.query(
+          `UPDATE products SET stock_quantity = stock_quantity - $1
+           WHERE id = $2 AND stock_quantity >= $1
+           RETURNING stock_quantity`,
+          [item.quantity, item.product_id]
+        );
+        if (stockResult.rows.length === 0) {
+          throw new Error(`Not enough stock for ${productName}`);
+        }
       }
     }
 
@@ -868,10 +1070,26 @@ app.post('/api/sales/:id/void', requireAuth, requireRole('owner'), async (req, r
 
     const items = await client.query('SELECT * FROM sale_items WHERE sale_id = $1', [sale.id]);
     for (const item of items.rows) {
-      await client.query(
-        'UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2',
-        [item.quantity, item.product_id]
+      if (!item.product_id) continue;
+      // Combo lines restore their recipe (the sale deducted components, not
+      // the combo row) — regular lines restore the product itself.
+      const comps = await client.query(
+        `SELECT component_id, quantity FROM product_components WHERE product_id = $1`,
+        [item.product_id]
       );
+      if (comps.rows.length > 0) {
+        for (const c of comps.rows) {
+          await client.query(
+            'UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2',
+            [Number(c.quantity) * Number(item.quantity), c.component_id]
+          );
+        }
+      } else {
+        await client.query(
+          'UPDATE products SET stock_quantity = stock_quantity + $1 WHERE id = $2',
+          [item.quantity, item.product_id]
+        );
+      }
     }
 
     if ((sale.payment_method === 'utang' || sale.payment_method === 'split') && sale.customer_id) {
@@ -935,9 +1153,10 @@ app.get('/api/dashboard', requireAuth, requireRole('owner'), async (req, res) =>
       pool.query(`
         SELECT id, name, stock_quantity, units_per_pack, unit_label,
                COUNT(*) OVER() AS total_count
-        FROM products
-        WHERE stock_quantity <= low_stock_threshold
-        ORDER BY stock_quantity ASC
+        FROM products pr
+        WHERE pr.stock_quantity <= pr.low_stock_threshold
+          AND NOT EXISTS (SELECT 1 FROM product_components pc WHERE pc.product_id = pr.id)
+        ORDER BY pr.stock_quantity ASC
         LIMIT 5
       `),
 
@@ -1796,14 +2015,16 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
   try {
     const [stockValue, statusCounts, topMovers, slowMovers, lowStockList, outOfStockList] = await Promise.all([
       pool.query(
-        `SELECT COALESCE(SUM(cost_price * stock_quantity), 0) AS value FROM products`
+        `SELECT COALESCE(SUM(cost_price * stock_quantity), 0) AS value FROM products p
+         WHERE NOT EXISTS (SELECT 1 FROM product_components pc WHERE pc.product_id = p.id)`
       ),
       pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE stock_quantity <= 0) AS out_of_stock,
           COUNT(*) FILTER (WHERE stock_quantity > 0 AND stock_quantity <= low_stock_threshold) AS low_stock,
           COUNT(*) FILTER (WHERE stock_quantity > low_stock_threshold) AS available
-        FROM products
+        FROM products p
+        WHERE NOT EXISTS (SELECT 1 FROM product_components pc WHERE pc.product_id = p.id)
       `),
       pool.query(
         `SELECT p.id, p.name, SUM(si.quantity) AS qty_sold
@@ -1822,6 +2043,7 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
            JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
            WHERE s.created_at >= $1 AND s.created_at < $2
          )
+         AND NOT EXISTS (SELECT 1 FROM product_components pc WHERE pc.product_id = p.id)
          ORDER BY p.stock_quantity DESC LIMIT 5`,
         [rangeStart, rangeEnd]
       ),
@@ -1838,6 +2060,7 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
           GROUP BY si.product_id
         ) sold ON sold.pid = p.id
         WHERE p.stock_quantity > 0 AND p.stock_quantity <= p.low_stock_threshold
+          AND NOT EXISTS (SELECT 1 FROM product_components pc WHERE pc.product_id = p.id)
         ORDER BY p.stock_quantity ASC
       `, [rangeStart, rangeEnd]),
       pool.query(`
@@ -1853,6 +2076,7 @@ app.get('/api/reports/inventory', requireAuth, requireRole('owner'), async (req,
           GROUP BY si.product_id
         ) sold ON sold.pid = p.id
         WHERE p.stock_quantity <= 0
+          AND NOT EXISTS (SELECT 1 FROM product_components pc WHERE pc.product_id = p.id)
         ORDER BY p.name ASC
       `, [rangeStart, rangeEnd]),
     ]);
@@ -2150,6 +2374,7 @@ app.get('/api/reports/forecast', requireAuth, requireRole('owner'), async (req, 
        LEFT JOIN sale_items si ON si.product_id = p.id
        LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
        WHERE 1=1 ${categoryFilter}
+         AND NOT EXISTS (SELECT 1 FROM product_components pc WHERE pc.product_id = p.id)
        GROUP BY p.id, p.name, p.category, p.stock_quantity,
                 p.low_stock_threshold, p.units_per_pack, p.unit_label
        ORDER BY total_sold DESC`,
@@ -2305,6 +2530,13 @@ app.post('/api/products/restock/bulk', requireAuth, requireRole('owner'), async 
       const before = await client.query('SELECT * FROM products WHERE id = $1 FOR UPDATE', [it.product_id]);
       if (before.rows.length === 0) throw new Error(`Product #${it.product_id} not found`);
       const prev = before.rows[0];
+      const comboCheck = await client.query(
+        'SELECT 1 FROM product_components WHERE product_id = $1 LIMIT 1',
+        [it.product_id]
+      );
+      if (comboCheck.rows.length > 0) {
+        throw new Error(`${prev.name} is a combo — stock in its ingredients instead`);
+      }
       const oldQty = Number(prev.stock_quantity);
       const oldCost = prev.cost_price == null ? null : Number(prev.cost_price);
       const result = await client.query(
@@ -2367,6 +2599,14 @@ app.post('/api/products/:id/restock', requireAuth, requireRole('owner'), async (
       return res.status(404).json({ error: 'Product not found' });
     }
     const prev = before.rows[0];
+    const comboCheck = await client.query(
+      'SELECT 1 FROM product_components WHERE product_id = $1 LIMIT 1',
+      [req.params.id]
+    );
+    if (comboCheck.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `${prev.name} is a combo — stock in its ingredients instead` });
+    }
     const oldQty = Number(prev.stock_quantity);
     const oldCost = prev.cost_price == null ? null : Number(prev.cost_price);
     const cost = cost_price === '' || cost_price == null ? null : Number(cost_price);

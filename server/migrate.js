@@ -129,6 +129,17 @@ const p=require('./db');
         created_by INTEGER REFERENCES users(id),
         created_at TIMESTAMPTZ DEFAULT NOW()
       )`);
+  // Combo / prepared products (e.g. brewed coffee = Kopiko sachet + Styro cup).
+  // Selling a combo deducts its components' stock, not its own stock_quantity.
+  await p.query(`CREATE TABLE IF NOT EXISTS product_components (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        component_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        quantity NUMERIC NOT NULL DEFAULT 1,
+        UNIQUE (product_id, component_id)
+      )`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_product_components_product ON product_components (product_id)`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_product_components_component ON product_components (component_id)`);
   await p.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'cash'`);
   await p.query(`UPDATE expenses SET payment_method='cash' WHERE payment_method IS NULL`);
   await p.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS gcash_amount NUMERIC DEFAULT 0`);

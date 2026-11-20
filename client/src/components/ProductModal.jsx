@@ -6,14 +6,23 @@ const emptyForm = {
   units_per_pack: '', unit_label: ''
 };
 
-function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = [] }) {
+function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = [], products = [] }) {
   const [form, setForm] = useState(emptyForm);
   const [addingNewCategory, setAddingNewCategory] = useState(false);
+  // Combo / prepared product (e.g. brewed coffee = Kopiko sachet + Styro cup).
+  // isCombo switches the form from "own stock" to "components" mode.
+  const [isCombo, setIsCombo] = useState(false);
+  const [components, setComponents] = useState([]); // [{ product_id, quantity }]
 
   // When editing, pre-fill the form with the product's existing data.
   // When adding, reset to blank. This runs every time the modal opens.
   useEffect(() => {
+    const existing = Array.isArray(initialData?.components) ? initialData.components : [];
     setForm(initialData ? { ...initialData } : emptyForm);
+    setIsCombo(existing.length > 0);
+    setComponents(
+      existing.map((c) => ({ product_id: Number(c.product_id), quantity: Number(c.quantity) }))
+    );
     setAddingNewCategory(false);
   }, [initialData, isOpen]);
 
@@ -45,9 +54,58 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
     setForm((prev) => ({ ...prev, cost_price: perPiece }));
   };
 
+  // ---- Combo / prepared product helpers ---------------------------------
+  const selfId = initialData ? Number(initialData.id) : null;
+  const comboRows = components
+    .map((c) => ({ ...c, product: products.find((p) => Number(p.id) === Number(c.product_id)) }))
+    .filter((c) => c.product);
+  // Combo cost = Σ (component cost × qty) — kept in sync with the server.
+  const comboCost = comboRows.reduce(
+    (sum, c) => sum + Number(c.quantity) * Number(c.product.cost_price || 0),
+    0
+  );
+  // Candidates: not the combo itself, not already added, and not a combo
+  // itself (recipes are one level deep only).
+  const availableProducts = products.filter(
+    (p) =>
+      Number(p.id) !== selfId &&
+      !components.some((c) => Number(c.product_id) === Number(p.id)) &&
+      !(Array.isArray(p.components) && p.components.length > 0)
+  );
+  const comboInvalid =
+    isCombo &&
+    (components.length === 0 ||
+      components.some((c) => !(Number(c.quantity) > 0)));
+
+  const addComponent = (id) => {
+    const pid = Number(id);
+    if (!pid) return;
+    setComponents((prev) =>
+      prev.some((c) => Number(c.product_id) === pid)
+        ? prev
+        : [...prev, { product_id: pid, quantity: 1 }]
+    );
+  };
+  const setComponentQty = (pid, qty) =>
+    setComponents((prev) =>
+      prev.map((c) => (Number(c.product_id) === Number(pid) ? { ...c, quantity: qty } : c))
+    );
+  const removeComponent = (pid) =>
+    setComponents((prev) => prev.filter((c) => Number(c.product_id) !== Number(pid)));
+
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSave(form);
+    if (comboInvalid) return;
+    onSave({
+      ...form,
+      // Explicit components list: [] turns the product back into a regular one.
+      components: isCombo
+        ? components.map((c) => ({ product_id: Number(c.product_id), quantity: Number(c.quantity) }))
+        : [],
+      ...(isCombo
+        ? { cost_price: Math.round(comboCost * 10000) / 10000 }
+        : {}),
+    });
   };
 
   
@@ -119,9 +177,19 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-on-surface-variant">
-                {hasPack ? 'Cost Price per Pack (₱)' : 'Cost Price (₱)'}
+                {isCombo
+                  ? 'Cost Price (₱) — from components'
+                  : hasPack
+                    ? 'Cost Price per Pack (₱)'
+                    : 'Cost Price (₱)'}
               </label>
-              {hasPack ? (
+              {isCombo ? (
+                <input
+                  type="number" step="0.01" disabled
+                  value={Math.round(comboCost * 100) / 100}
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1 bg-surface-container text-on-surface-variant"
+                />
+              ) : hasPack ? (
                 <>
                   <input
                     type="number" step="0.01" min="0" value={costPerPackDisplay}
@@ -152,6 +220,80 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
               />
             </div>
           </div>
+          {/* Combo / prepared product: built from other products at sale time */}
+          <div className="border border-outline-variant rounded-lg p-3 bg-surface-container-low">
+            <label className="flex items-center gap-2 text-sm font-medium text-on-surface">
+              <input
+                type="checkbox"
+                checked={isCombo}
+                onChange={(e) => setIsCombo(e.target.checked)}
+                className="h-4 w-4"
+              />
+              Prepared / combo product
+            </label>
+            <p className="text-xs text-on-surface-variant mt-1">
+              Something you assemble yourself (e.g. brewed coffee served in a Styro cup). It sells as one line
+              in the POS, but each sale deducts the stock of its components.
+            </p>
+            {isCombo && (
+              <div className="mt-3 space-y-2">
+                <select
+                  value=""
+                  onChange={(e) => addComponent(e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-3 py-2 text-sm bg-surface"
+                >
+                  <option value="">
+                    {availableProducts.length === 0
+                      ? 'No products available to add'
+                      : 'Add a component product...'}
+                  </option>
+                  {availableProducts.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} — ₱{p.selling_price}
+                      {Number(p.stock_quantity) > 0 ? ` (${p.stock_quantity} left)` : ' (out of stock)'}
+                    </option>
+                  ))}
+                </select>
+                {comboRows.map((c) => (
+                  <div
+                    key={c.product_id}
+                    className="flex items-center gap-2 bg-surface border border-outline-variant rounded-lg px-2 py-1.5"
+                  >
+                    <span className="flex-1 min-w-0 truncate text-sm text-on-surface">{c.product.name}</span>
+                    <span className="text-xs text-on-surface-variant shrink-0">× qty</span>
+                    <input
+                      type="number" min="1" step="1"
+                      value={c.quantity}
+                      onChange={(e) => setComponentQty(c.product_id, e.target.value)}
+                      className="w-16 border border-outline-variant rounded px-2 py-1 text-sm text-right"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeComponent(c.product_id)}
+                      className="text-error text-sm px-1 py-1"
+                      title="Remove component"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                {comboInvalid && (
+                  <p className="text-xs text-error">
+                    {components.length === 0
+                      ? 'Add at least one component.'
+                      : 'Every component needs a quantity of at least 1.'}
+                  </p>
+                )}
+                {comboRows.length > 0 && (
+                  <p className="text-xs text-on-surface-variant">
+                    Cost ₱{comboCost.toFixed(2)} per combo (auto from components) · Stock is managed by the
+                    components, not by this product.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+          {!isCombo && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-on-surface-variant">Stock Quantity</label>
@@ -170,6 +312,7 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
               />
             </div>
           </div>
+          )}
           <div>
             <label className="text-sm font-medium text-on-surface-variant">Supplier</label>
             <input
@@ -177,6 +320,8 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
               className="w-full border border-outline-variant rounded-lg px-3 py-2 mt-1"
             />
           </div>
+          {!isCombo && (
+          <>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-on-surface-variant">Units per Pack</label>
@@ -198,6 +343,8 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
           <p className="text-xs text-on-surface-variant -mt-2">
             Optional — only fill this in for products sold by pack but tracked by individual pieces (e.g. cigarettes).
           </p>
+          </>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button" onClick={onClose}
@@ -207,7 +354,8 @@ function ProductModal({ isOpen, onClose, onSave, initialData, knownCategories = 
             </button>
             <button
               type="submit"
-              className="px-4 py-2 rounded-lg bg-primary text-on-primary font-medium"
+              disabled={comboInvalid}
+              className="px-4 py-2 rounded-lg bg-primary text-on-primary font-medium disabled:opacity-50"
             >
               Save Product
             </button>

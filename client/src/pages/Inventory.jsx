@@ -86,6 +86,12 @@ function Inventory() {
   };
 
   const categories = ['All', ...new Set(products.map((p) => p.category).filter(Boolean))];
+
+  // Combo / prepared product (e.g. brewed coffee): its own stock_quantity is
+  // unused — real stock lives in the components (see product_components).
+  const isCombo = (p) => Array.isArray(p.components) && p.components.length > 0;
+  const comboLabel = (p) =>
+    `Made to order — ${p.components.map((c) => `${Number(c.quantity)}× ${c.name}`).join(' + ')}`;
   const QUICK_COUNT = 6; // "All" + 5 real categories shown as pills
   const quickCategories = categories.slice(0, QUICK_COUNT);
   const moreCategories = categories.slice(QUICK_COUNT);
@@ -203,7 +209,10 @@ function Inventory() {
         method,
         body: JSON.stringify(formData),
       });
-      if (!res.ok) throw new Error('Save failed');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Save failed');
+      }
       setModalOpen(false);
       fetchProducts();
       showToast(isEditing ? 'Product updated' : 'Product added'); // refresh the list with the latest data from the server
@@ -368,6 +377,7 @@ function Inventory() {
   if (error) return <p className="text-error">Error: {error}</p>;
 
   function getStatus(product) {
+    if (isCombo(product)) return { label: 'Made to order', className: 'bg-purple-100 text-purple-700' };
     if (product.stock_quantity <= 0) return { label: 'Out of Stock', className: 'bg-error-container text-error' };
     if (product.stock_quantity <= product.low_stock_threshold) return { label: 'Low Stock', className: 'bg-orange-100 text-orange-700' };
     return { label: 'Available', className: 'bg-secondary-container text-secondary' };
@@ -399,6 +409,7 @@ function Inventory() {
     .filter((g) => g.items.length > 0);
   // Bulk stock-in list: same products, same grouping as audit
   const stockinList = products.filter((p) => {
+    if (isCombo(p)) return false; // combos have no stock of their own — stock their ingredients
     const q = stockinSearch.trim().toLowerCase();
     const matchesSearch = !q ||
       p.name.toLowerCase().includes(q) ||
@@ -1243,7 +1254,9 @@ function Inventory() {
               </div>
               <div className="flex flex-wrap justify-between items-center gap-x-3 gap-y-1 mt-3">
                 <span className="text-primary font-semibold">₱{product.selling_price}</span>
-                <p className="text-on-surface-variant text-xs flex-1 min-w-0 truncate">{formatStock(product)}</p>
+                <p className="text-on-surface-variant text-xs flex-1 min-w-0 truncate" title={isCombo(product) ? comboLabel(product) : undefined}>
+                  {isCombo(product) ? comboLabel(product) : formatStock(product)}
+                </p>
                 <div className="flex items-center gap-1">
                   <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium px-2 py-1.5 rounded hover:bg-surface-container-low">
                     Edit
@@ -1282,7 +1295,7 @@ function Inventory() {
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.className}`}>
                       {status.label}
                     </span>
-                    <p className="text-on-surface-variant text-xs mt-1">{formatStock(product)}</p>
+                    <p className="text-on-surface-variant text-xs mt-1">{isCombo(product) ? comboLabel(product) : formatStock(product)}</p>
                   </td>
                   <td className="px-4 py-3 space-x-3">
                     <button onClick={() => openEditModal(product)} className="text-primary text-sm font-medium">
@@ -1330,6 +1343,7 @@ function Inventory() {
         onSave={handleSave}
         initialData={editingProduct}
         knownCategories={categories.filter((c) => c !== 'All')}
+        products={products}
       />
 
       <RepackModal

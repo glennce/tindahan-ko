@@ -9,6 +9,11 @@ const PRODUCTS_API = '/products';
 const CUSTOMERS_API = '/customers';
 const SALES_API = '/sales';
 
+// Combo / prepared product (e.g. brewed coffee in a Styro cup): always
+// sellable — its stock lives in components, checked when the sale completes.
+const isCombo = (p) => Array.isArray(p?.components) && p.components.length > 0;
+const comboRecipe = (p) => p.components.map((c) => `${Number(c.quantity)}× ${c.name}`).join(' + ');
+
 function SalesPOS() {
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -65,8 +70,8 @@ function SalesPOS() {
     return matchesSearch && matchesCategory;
   })
   .sort((a, b) => {
-    const aOut = Number(a.stock_quantity) <= 0 ? 1 : 0;
-    const bOut = Number(b.stock_quantity) <= 0 ? 1 : 0;
+    const aOut = !isCombo(a) && Number(a.stock_quantity) <= 0 ? 1 : 0;
+    const bOut = !isCombo(b) && Number(b.stock_quantity) <= 0 ? 1 : 0;
     if (aOut !== bOut) return aOut - bOut;
     return Number(b.total_sold) - Number(a.total_sold);
   });
@@ -87,11 +92,13 @@ function SalesPOS() {
     // Guard against malformed items — a cart row without an id would never
     // dedupe and would fail on sale submission ("Product undefined not found").
     if (!product || !product.id) return;
+    const combo = isCombo(product);
     setCart((prev) => {
       const existing = prev.find((item) => item.product_id === product.id);
       if (existing) {
         // Don't let the cart quantity exceed what's actually in stock
-        if (existing.quantity >= product.stock_quantity) return prev;
+        // (combos are unbounded here — their components are checked at checkout)
+        if (!combo && existing.quantity >= product.stock_quantity) return prev;
         return prev.map((item) =>
           item.product_id === product.id ? { ...item, quantity: item.quantity + 1 } : item
         );
@@ -103,7 +110,8 @@ function SalesPOS() {
           name: product.name,
           unit_price: Number(product.selling_price),
           quantity: 1,
-          stock_quantity: product.stock_quantity,
+          stock_quantity: combo ? Number.MAX_SAFE_INTEGER : product.stock_quantity,
+          ...(combo ? { components: product.components } : {}),
         },
       ];
     });
@@ -117,9 +125,11 @@ function SalesPOS() {
     apiFetch(`${PRODUCTS_API}/${product.id}/associations`)
       .then((res) => res.json())
       .then((d) => {
-        // Normalize to the product shape addToCart expects (id/key, price,
-        // stock) — the API returns product_id as the key.
-        const items = Array.isArray(d) ? d.map((s) => ({ ...s, id: s.product_id })) : [];
+        // Re-map server ids onto the loaded products so suggestions carry the
+        // full shape addToCart expects — including a combo's components list.
+        const items = Array.isArray(d)
+          ? d.map((s) => products.find((p) => p.id === s.product_id)).filter(Boolean)
+          : [];
         setSuggestions(items.length > 0 ? { anchor: product.name, items } : null);
       })
       .catch(() => setSuggestions(null));
@@ -167,10 +177,13 @@ function SalesPOS() {
   };
 
   // Suggestions already in cart or out of stock are hidden; an in-cart
-  // suggestion disappears once added, keeping the strip clean.
+  // suggestion disappears once added, keeping the strip clean. Combos are
+  // always sellable, so their own (unused) stock never hides them.
   const suggestionItems = suggestions
     ? suggestions.items.filter(
-        (s) => Number(s.stock_quantity) > 0 && !cart.some((i) => i.product_id === s.product_id)
+        (s) =>
+          (isCombo(s) || Number(s.stock_quantity) > 0) &&
+          !cart.some((i) => i.product_id === s.id)
       )
     : [];
 
@@ -306,7 +319,10 @@ function SalesPOS() {
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">
           {paginatedProducts.map((product) => {
-            const outOfStock = product.stock_quantity <= 0;
+            const combo = isCombo(product);
+            // Combos are always sellable — the server checks their components
+            // when the sale completes.
+            const outOfStock = !combo && product.stock_quantity <= 0;
             const inCart = cart.find((item) => item.product_id === product.id);
             const cartQty = inCart ? inCart.quantity : 0;
             return (
@@ -324,8 +340,11 @@ function SalesPOS() {
                 )}
                 <p className="font-medium text-on-surface text-sm lg:text-base pr-7">{product.name}</p>
                 <p className="text-primary font-semibold">₱{product.selling_price}</p>
-                <p className="text-on-surface-variant text-sm mb-2">
-                  {formatStock(product)}
+                <p
+                  className="text-on-surface-variant text-sm mb-2"
+                  title={combo ? `Uses: ${comboRecipe(product)}` : undefined}
+                >
+                  {combo ? 'Made to order' : formatStock(product)}
                 </p>
                 <button
                   disabled={outOfStock}
@@ -406,7 +425,7 @@ function SalesPOS() {
               <div className="flex flex-col gap-1">
                 {suggestionItems.map((s) => (
                   <button
-                    key={s.product_id}
+                    key={s.id}
                     onClick={() => addToCart(s)}
                     className="flex justify-between items-center gap-2 bg-surface border border-outline-variant rounded-md px-2 py-1.5 hover:border-primary text-left"
                   >
@@ -428,6 +447,11 @@ function SalesPOS() {
                   ✕
                 </button>
               </div>
+              {item.components && item.components.length > 0 && (
+                <p className="text-[11px] text-on-surface-variant">
+                  Made to order — {item.components.map((c) => `${Number(c.quantity)}× ${c.name}`).join(' + ')}
+                </p>
+              )}
               <div className="flex justify-between items-center mt-1">
                 <div className="flex items-center gap-2">
                   <button

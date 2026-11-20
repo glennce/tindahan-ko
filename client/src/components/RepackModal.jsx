@@ -43,9 +43,11 @@ function RepackModal({ isOpen, onClose, onSave, products }) {
     const s = q.toLowerCase();
     return products.filter(
       (p) =>
-        p.name.toLowerCase().includes(s) ||
-        (p.sku || '').toLowerCase().includes(s) ||
-        (p.category || '').toLowerCase().includes(s)
+        // Combos have no stock of their own — they can't be repacked.
+        !(Array.isArray(p.components) && p.components.length > 0) &&
+        (p.name.toLowerCase().includes(s) ||
+          (p.sku || '').toLowerCase().includes(s) ||
+          (p.category || '').toLowerCase().includes(s))
     );
   };
 
