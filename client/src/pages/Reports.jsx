@@ -3,6 +3,7 @@ import { apiFetch } from '../api';
 import { TrendingUp, Activity, Package, CreditCard, Receipt, Download, AlertTriangle } from 'lucide-react';
 import { formatStock, pctChange, downloadCsv, today, firstOfMonth, manilaIsoDate } from '../utils';
 import StatCard from '../components/StatCard';
+import { useToast } from '../context/ToastContext';
 
 const TABS = [
   { key: 'sales', label: 'Sales', icon: TrendingUp },
@@ -162,6 +163,61 @@ async function exportForecastPdf(items, meta, start, end, category) {
   }
 
   doc.save(`forecast-to-buy-${fileSlug}-${dateStr}.pdf`);
+}
+
+/* Export an editable Purchase Sheet (.xlsx) — the list you take to the
+   supplier. Same items/grouping as the forecast PDF, but only rows with a
+   To Buy suggestion, and the last 3 columns (Qty / Loose pcs / Price) left
+   blank to fill on-site. Inventory → Stock In → Import reads this file back
+   and turns it into a bulk stock-in. Returns rows written (0 = nothing to buy). */
+async function exportPurchaseSheetXlsx(items, category) {
+  const XLSX = await import('xlsx');
+  const selectedCats = Array.isArray(category)
+    ? category.filter(Boolean)
+    : category
+      ? [category]
+      : [];
+  const filteredItems = selectedCats.length > 0
+    ? (items || []).filter((p) => selectedCats.includes((p.category || 'Others').trim() || 'Others') || selectedCats.includes(p.category))
+    : (items || []);
+  const fileSlug = selectedCats.length > 0
+    ? selectedCats.map((c) => String(c).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')).filter(Boolean).join('-').slice(0, 60) || 'selected'
+    : 'all';
+  const toBuy = filteredItems.filter((p) => p.buy_label && p.buy_label !== '—');
+  if (toBuy.length === 0) return 0;
+
+  const groups = {};
+  toBuy.forEach((p) => {
+    const cat = (p.category || 'Others').trim() || 'Others';
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(p);
+  });
+  const header = ['ID', 'Category', 'Product', 'Stock', 'To Buy (next 7d)', 'Qty to buy', 'Loose pcs', 'Price/pack ₱'];
+  const rows = [header];
+  Object.keys(groups).sort((a, b) => a.localeCompare(b)).forEach((cat) => {
+    groups[cat]
+      .sort((a, b) => Number(b.qty_sold || 0) - Number(a.qty_sold || 0) || String(a.name).localeCompare(String(b.name)))
+      .forEach((p) => {
+        // Last 3 columns stay blank — filled at the supplier, read on import.
+        rows.push([Number(p.id), cat, p.name, Number(p.stock_quantity ?? 0), p.buy_label ?? '', '', '', '']);
+      });
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [
+    { wch: 7, hidden: true }, // ID — the import matches on it; hidden so it stays out of the way
+    { wch: 24 },
+    { wch: 30 },
+    { wch: 8 },
+    { wch: 18 },
+    { wch: 11 },
+    { wch: 11 },
+    { wch: 15 },
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Purchase Sheet');
+  XLSX.writeFile(wb, `purchase-sheet-${fileSlug}-${today()}.xlsx`);
+  return toBuy.length;
 }
 
 async function exportRestockPdf(data, start, end) {
@@ -725,6 +781,7 @@ function ProductReport({ start, end, onDatesChange }) {
   const [forecastMap, setForecastMap] = useState({});
   const [forecastList, setForecastList] = useState([]);
   const [forecastMeta, setForecastMeta] = useState(null);
+  const { showToast } = useToast();
 
   useEffect(() => {
     apiFetch('/products').then((r) => r.json()).then(setProducts).catch(() => {});
@@ -1011,6 +1068,18 @@ function ProductReport({ start, end, onDatesChange }) {
                 const all = getAllProducts();
                 const filtered = all.filter((p) => p.name.toLowerCase().includes(productSearch.toLowerCase()) || (p.category||'').toLowerCase().includes(productSearch.toLowerCase()));
                 const display = showAll ? filtered : filtered.slice(0, 10);
+                // Fills the Purchase Sheet the supplier trip uses; import lives in Inventory → Stock In.
+                const handlePurchaseSheet = async () => {
+                  const onlySelected = selectedCategories.length > 0
+                    ? filtered.filter((p) => selectedCategories.includes(p.category))
+                    : filtered;
+                  try {
+                    const count = await exportPurchaseSheetXlsx(onlySelected, selectedCategories);
+                    if (count === 0) showToast('Nothing to buy — no To Buy suggestions in this range', 'error');
+                  } catch (err) {
+                    showToast(err.message || 'Purchase Sheet export failed', 'error');
+                  }
+                };
                 if (filtered.length === 0) return <p className="text-on-surface-variant text-sm">No products found.</p>;
                 return (
                   <>
@@ -1062,9 +1131,16 @@ function ProductReport({ start, end, onDatesChange }) {
                       >
                         <Download size={14} /> Export forecast PDF{selectedCategories.length > 0 ? ` (${selectedCategories.length} cat.)` : ''}
                       </button>
+                      <button
+                        onClick={handlePurchaseSheet}
+                        className="text-primary text-sm font-medium flex items-center gap-1"
+                        title="Fill Qty / Loose pcs / Price at the supplier, then import it in Inventory → Stock In"
+                      >
+                        <Download size={14} /> Purchase Sheet (.xlsx){selectedCategories.length > 0 ? ` (${selectedCategories.length} cat.)` : ''}
+                      </button>
                     </div>
                     {selectedCategories.length > 0 && (
-                      <p className="text-xs text-on-surface-variant mt-1">PDF export is limited to: {selectedCategories.join(', ')}</p>
+                      <p className="text-xs text-on-surface-variant mt-1">PDF and Purchase Sheet exports are limited to: {selectedCategories.join(', ')}</p>
                     )}
                   </>
                 );

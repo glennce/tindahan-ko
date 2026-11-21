@@ -1,11 +1,11 @@
 import { apiFetch } from '../api';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import ProductModal from '../components/ProductModal';
 import RepackModal from '../components/RepackModal';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 import { formatStock } from '../utils';
-import { Eye } from 'lucide-react';
+import { Eye, Upload } from 'lucide-react';
 
 const API = '/products';
 
@@ -56,6 +56,8 @@ function Inventory() {
   const [stockinSaving, setStockinSaving] = useState(false);
   const [stockinPayMethod, setStockinPayMethod] = useState('cash');
   const [stockinPreviewOpen, setStockinPreviewOpen] = useState(false);
+  const [stockinImporting, setStockinImporting] = useState(false);
+  const stockinFileRef = useRef(null);
   const [restockLogs, setRestockLogs] = useState([]);
   const [restockSearch, setRestockSearch] = useState('');
   const [restockPage, setRestockPage] = useState(1);
@@ -339,6 +341,95 @@ function Inventory() {
     });
   };
 
+  // Import a Purchase Sheet (Reports → Purchase Sheet .xlsx) filled at the
+  // supplier: matches rows by hidden ID column (product name as fallback),
+  // fills the stock-in rows, then the normal Review / Confirm applies them
+  // in one shot (stock + cost + Cash Drawer expense).
+  const handleStockinImport = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file) return;
+    setStockinImporting(true);
+    try {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const grid = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
+      if (grid.length === 0) throw new Error('The sheet is empty');
+
+      // Header row = the one holding Product + Qty (tolerates title rows above it).
+      const norm = (v) => String(v ?? '').trim().toLowerCase();
+      const headerIdx = grid.findIndex((row) =>
+        row.some((c) => ['product', 'product name', 'name'].includes(norm(c))) &&
+        row.some((c) => norm(c).includes('qty'))
+      );
+      if (headerIdx === -1) throw new Error('No Product/Qty columns found — this does not look like a Purchase Sheet');
+      const header = grid[headerIdx].map(norm);
+      const col = (...names) => names.reduce((found, n) => (found !== -1 ? found : header.indexOf(n)), -1);
+      const iId = col('id');
+      const iName = col('product', 'product name', 'name');
+      const iPacks = col('qty to buy', 'qty to buy (packs)', 'qty (packs)', 'packs', 'qty');
+      const iLoose = col('loose pcs', 'loose pieces', 'loose');
+      const iPrice = col('price/pack ₱', 'price/pack', 'price per pack ₱', 'price per pack', 'cost/pack ₱', 'cost/pack', 'price', 'cost');
+      if (iName === -1 || (iPacks === -1 && iLoose === -1)) {
+        throw new Error('Missing Product or Qty column — this does not look like a Purchase Sheet');
+      }
+
+      const num = (v) => {
+        const n = Number(String(v ?? '').replace(/[^0-9.]/g, ''));
+        return Number.isFinite(n) ? n : 0;
+      };
+      const byId = new Map(products.map((p) => [String(p.id), p]));
+      const byName = new Map(products.map((p) => [p.name.trim().toLowerCase(), p]));
+
+      const next = {};
+      const skipped = [];
+      let filled = 0;
+      for (const row of grid.slice(headerIdx + 1)) {
+        const packs = iPacks === -1 ? 0 : num(row[iPacks]);
+        const loose = iLoose === -1 ? 0 : num(row[iLoose]);
+        if (packs <= 0 && loose <= 0) continue; // blank = not bought this trip
+        const name = String(row[iName] ?? '').trim();
+        const idVal = iId === -1 ? '' : String(row[iId] ?? '').trim();
+        const p = (idVal && byId.get(idVal)) || byName.get(name.toLowerCase());
+        if (!p || isCombo(p)) {
+          if (name || idVal) skipped.push(name || `#${idVal}`);
+          continue;
+        }
+        const priceStr = iPrice === -1 ? '' : String(row[iPrice] ?? '').replace(/[^0-9.]/g, '');
+        filled++;
+        next[String(p.id)] = {
+          packs: packs > 0 ? String(packs) : '',
+          loose: loose > 0 ? String(loose) : '',
+          costPack: priceStr !== '' && Number.isFinite(Number(priceStr)) ? priceStr : '',
+        };
+      }
+      if (filled === 0) {
+        throw new Error(
+          skipped.length > 0
+            ? `None of the products matched (${skipped.slice(0, 3).join(', ')})`
+            : 'No quantities found — fill Qty to buy / Loose pcs in the sheet first'
+        );
+      }
+      setStockinRows((prev) => ({ ...prev, ...next }));
+      setStockinSearch('');
+      setStockinCategory('All');
+      setStockinPage(1);
+      setStockinPreviewOpen(true);
+      showToast(`Imported ${filled} product${filled === 1 ? '' : 's'} from ${file.name} — check the list, then Confirm`);
+      if (skipped.length > 0) {
+        showToast(
+          `Skipped ${skipped.length}: ${skipped.slice(0, 4).join(', ')}${skipped.length > 4 ? ` +${skipped.length - 4} more` : ''}`,
+          'error'
+        );
+      }
+    } catch (err) {
+      showToast(err.message || 'Import failed', 'error');
+    } finally {
+      setStockinImporting(false);
+    }
+  };
+
   const handleRepack = async (data) => {
     try {
       const res = await apiFetch(`${API}/repack`, {
@@ -563,12 +654,32 @@ function Inventory() {
         <div className="space-y-4">
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
             <h2 className="font-semibold text-blue-800 text-sm mb-1">Restock many products at once</h2>
-            <p className="text-blue-700 text-xs">Fill in packs / loose pieces / cost per pack for every delivery below, then hit one button. The total purchase cost is auto-deducted from your Cash Drawer (Cash or GCash) as a Restock expense. Leave Cost/pack blank to use the current cost — e.g. Camel ₱145/pack — or type a new one if the supplier raised it to ₱147.</p>
+            <p className="text-blue-700 text-xs">Fill in packs / loose pieces / cost per pack for every delivery below, then hit one button. The total purchase cost is auto-deducted from your Cash Drawer (Cash or GCash) as a Restock expense. Leave Cost/pack blank to use the current cost — e.g. Camel ₱145/pack — or type a new one if the supplier raised it to ₱147. Buying at the supplier? Download the <strong>Purchase Sheet (.xlsx)</strong> from Reports → Products, fill Qty / Price there, then import it below.</p>
           </div>
 
           <div className="bg-surface border border-outline-variant rounded-xl p-4 lg:p-6">
-            <h2 className="font-semibold text-on-surface mb-1">Bulk stock in</h2>
-            <p className="text-xs text-on-surface-variant mb-3">Enter what arrived and hit Save — stocks add up instantly.</p>
+            <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+              <div>
+                <h2 className="font-semibold text-on-surface mb-1">Bulk stock in</h2>
+                <p className="text-xs text-on-surface-variant">Enter what arrived and hit Save — stocks add up instantly.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => stockinFileRef.current?.click()}
+                disabled={stockinImporting}
+                className="shrink-0 border border-outline-variant text-primary text-sm font-medium px-3 py-2 rounded-lg flex items-center gap-1 disabled:opacity-50"
+                title="Import a Purchase Sheet downloaded from Reports and filled at the supplier"
+              >
+                <Upload size={14} /> {stockinImporting ? 'Reading sheet…' : 'Import sheet'}
+              </button>
+              <input
+                ref={stockinFileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={handleStockinImport}
+              />
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
               <input
                 type="text"
